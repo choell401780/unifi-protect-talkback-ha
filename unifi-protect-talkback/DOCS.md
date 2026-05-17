@@ -6,7 +6,7 @@
 2. Klicke oben rechts auf das Drei-Punkte-Menü und wähle **Repositories**.
 3. Füge folgende URL hinzu:
    ```
-   https://github.com/YOUR_GITHUB_USER/unifi-protect-talkback-ha
+   https://github.com/choell401780/unifi-protect-talkback-ha
    ```
 4. Schließe den Dialog. Das Add-on **UniFi Protect Doorbell** erscheint nun im Store.
 5. Klicke auf das Add-on und dann auf **Installieren**.
@@ -17,27 +17,35 @@
 
 | Option | Beschreibung | Pflicht |
 |---|---|---|
-| `unifi_host` | IP-Adresse oder Hostname des UniFi Protect NVR | ✓ |
+| `unifi_host` | IP-Adresse oder Hostname der UniFi Console (UDM Pro, CloudKey, UNVR) | ✓ |
 | `unifi_port` | HTTPS-Port des NVR (Standard: 443) | |
 | `unifi_username` | Benutzername für den Protect-Login | ✓ |
 | `unifi_password` | Passwort für den Protect-Login | ✓ |
-| `unifi_camera_id` | ID der Türklingel-Kamera (24-stellige Hex-ID) | ✓ |
+| `doorbell_name` | Name der Türklingel als Filter (bei mehreren Geräten) | |
+| `doorbell_mac` | MAC-Adresse der Türklingel als eindeutiger Filter | |
+| `unifi_camera_id` | Direkte Kamera-ID als Fallback (überschreibt Auto-Discovery) | |
+| `ssl_verify` | TLS-Zertifikat des NVR prüfen (Standard: false) | |
 | `web_port` | Port der Weboberfläche (Standard: 8080) | |
 | `ssl` | HTTPS für die Weboberfläche aktivieren | |
 | `certfile` | Zertifikatsdatei aus `/ssl/` (z. B. `fullchain.pem`) | |
 | `keyfile` | Schlüsseldatei aus `/ssl/` (z. B. `privkey.pem`) | |
 | `log_level` | Protokollierungsstufe: `debug`, `info`, `warning`, `error` | |
 
-### Kamera-ID ermitteln
+### Türklingel-Erkennung (Auto-Discovery)
 
-Die Kamera-ID ist die interne 24-stellige ID in UniFi Protect.  
-Sie lässt sich über die UniFi Protect API abrufen:
+Das Add-on erkennt die Türklingel **automatisch** — eine Kamera-ID ist nicht mehr erforderlich.
 
-```
-https://<NVR-IP>/proxy/protect/api/cameras
-```
+**Ablauf:**
+1. Nach dem Login werden alle Geräte vom NVR abgerufen.
+2. Türklingeln werden anhand von Typ, Modell und Produktname erkannt.
+3. **Genau eine Türklingel gefunden:** wird automatisch verwendet.
+4. **Mehrere Türklingeln gefunden:** die Weboberfläche zeigt eine Auswahlliste.
+5. **Keine Türklingel erkannt:** Fehlermeldung mit Liste aller Geräte zur manuellen Auswahl.
 
-Alternativ ist sie in der URL sichtbar, wenn man die Kamera in der Protect-Weboberfläche öffnet.
+**Optionale Filter** (wenn mehrere Türklingeln vorhanden):
+- `doorbell_name`: Filterung nach Name (Teilstring, Groß-/Kleinschreibung egal)
+- `doorbell_mac`: Filterung nach MAC-Adresse (eindeutig)
+- `unifi_camera_id`: Direkte Angabe der ID überspringt die Erkennung vollständig
 
 ### Benötigter UniFi-Protect-Benutzer
 
@@ -72,6 +80,7 @@ https://<Home-Assistant-IP>:<web_port>
 
 ## Funktionsumfang
 
+- **Auto-Discovery**: Türklingel wird automatisch erkannt, keine manuelle ID nötig
 - **Livebild**: RTSP-Stream der Türklingel (HLS, ~3 s Verzögerung)
 - **Talkback**: Sprechen über den Lautsprecher der Türklingel (WebSocket)
 - **Display-Nachrichten**: Text auf dem LCD-Display der Türklingel anzeigen
@@ -82,7 +91,13 @@ https://<Home-Assistant-IP>:<web_port>
 
 **Add-on startet nicht**
 - Prüfe im Protokoll die Fehlermeldung.
-- Stelle sicher, dass `unifi_host`, `unifi_username` und `unifi_camera_id` gesetzt sind.
+- Stelle sicher, dass `unifi_host`, `unifi_username` und `unifi_password` gesetzt sind.
+
+**Keine Türklingel erkannt**
+- Die Weboberfläche zeigt alle gefundenen Geräte mit Name, Modell und MAC.
+- Ein Gerät kann manuell ausgewählt werden.
+- Als Fallback kann `unifi_camera_id` direkt gesetzt werden.
+- Debug-API: `GET /api/devices` zeigt alle erkannten Geräte.
 
 **Livebild lädt nicht**
 - Der NVR muss über Netzwerk erreichbar sein.
@@ -97,5 +112,5 @@ https://<Home-Assistant-IP>:<web_port>
 - Browser blockiert möglicherweise Autoplay. Einmal auf der Seite klicken, dann erneut versuchen.
 
 **Verbindung zum NVR schlägt fehl**
-- Das Add-on akzeptiert selbstsignierte Zertifikate des NVR automatisch.
+- Das Add-on akzeptiert selbstsignierte Zertifikate des NVR automatisch (`ssl_verify: false`).
 - Prüfe Benutzername und Passwort in der Konfiguration.

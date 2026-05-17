@@ -14,14 +14,25 @@ export type Camera = {
   state: string;
   model: string;
   marketName: string;
+  mac: string;
+  host: string;
+  isDoorbell: boolean;
 };
+
+function isDoorbellCamera(raw: Record<string, unknown>): boolean {
+  const type = String(raw["type"] ?? "").toLowerCase();
+  const model = String(raw["modelKey"] ?? raw["model"] ?? "").toLowerCase();
+  const marketName = String(raw["marketName"] ?? "").toLowerCase();
+  return type.includes("doorbell") || model.includes("doorbell") || marketName.includes("doorbell");
+}
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-export function createClient(host: string, port = 443): AxiosInstance {
+export function createClient(host: string, port = 443, sslVerify = false): AxiosInstance {
+  const ag = sslVerify ? new https.Agent({ rejectUnauthorized: true }) : agent;
   return axios.create({
     baseURL: `https://${host}:${port}`,
-    httpsAgent: agent,
+    httpsAgent: ag,
     withCredentials: true,
   });
 }
@@ -188,6 +199,9 @@ export async function getCameras(
     state: c["state"] as string,
     model: String(c["modelKey"] ?? c["model"] ?? ""),
     marketName: String(c["marketName"] ?? ""),
+    mac: String(c["mac"] ?? ""),
+    host: String(c["host"] ?? ""),
+    isDoorbell: isDoorbellCamera(c),
   }));
 
   console.log(`[getCameras] found ${cameras.length} camera(s)`);

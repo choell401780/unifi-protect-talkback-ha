@@ -1,9 +1,11 @@
 ---
 name: "UniFi Protect Doorbell"
 description: >-
-  Weboberfläche für UniFi Protect G4/G5 Doorbells:
+  Weboberfläche für UniFi Protect G4/G5 Doorbells.
+  Verbindung mit der UniFi Protect Console (UDM Pro, CloudKey, UNVR) —
+  die Türklingel wird automatisch erkannt.
   Livebild (HLS), Talkback, Klingelton-Steuerung, Display-Nachrichten.
-version: "1.1.0"
+version: "1.2.0"
 slug: "unifi_protect_doorbell"
 init: false
 startup: "application"
@@ -14,13 +16,11 @@ arch:
   - armhf
   - armv7
 
-# Weboberfläche direkt erreichbar (ohne Ingress) — port null = User wählt
 ports:
   8080/tcp: 8080
 ports_description:
   8080/tcp: "Weboberfläche"
 
-# HA-SSL-Zertifikat einbinden (wird benötigt wenn ssl: true)
 map:
   - ssl:ro
 
@@ -29,7 +29,10 @@ options:
   unifi_port: 443
   unifi_username: ""
   unifi_password: ""
+  doorbell_name: ""
+  doorbell_mac: ""
   unifi_camera_id: ""
+  ssl_verify: false
   web_port: 8080
   ssl: false
   certfile: "fullchain.pem"
@@ -41,7 +44,10 @@ schema:
   unifi_port: "int(1,65535)"
   unifi_username: str
   unifi_password: password
-  unifi_camera_id: str
+  doorbell_name: str?
+  doorbell_mac: str?
+  unifi_camera_id: str?
+  ssl_verify: bool?
   web_port: "int(1,65535)"
   ssl: bool
   certfile: str

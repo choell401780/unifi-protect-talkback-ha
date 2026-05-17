@@ -13,8 +13,8 @@ Vollständige Doorbell-Weboberfläche für UniFi Protect G4/G5 Doorbells.
 
 ## Voraussetzungen
 
-- UniFi Protect NVR (lokaler Netzwerkzugang)
-- G4 oder G5 Doorbell
+- UniFi Protect Console (UDM Pro, CloudKey, UNVR) — lokaler Netzwerkzugang
+- G4 oder G5 Doorbell (wird automatisch erkannt)
 - Lokaler NVR-Account (kein Ubiquiti SSO)
 - Node.js 20+
 - ffmpeg (im PATH verfügbar)
@@ -35,21 +35,26 @@ Browser öffnen: `http://SERVER-IP:8080`
 
 | Variable | Pflicht | Beschreibung |
 |---|---|---|
-| `PROTECT_HOST` | ✓ | IP/Hostname des NVR |
+| `PROTECT_HOST` | ✓ | IP/Hostname der UniFi Console |
 | `PROTECT_PORT` | – | HTTPS-Port (Standard: 443) |
 | `PROTECT_USERNAME` | ✓ | Lokaler NVR-Account |
 | `PROTECT_PASSWORD` | ✓ | NVR-Passwort |
-| `PROTECT_CAMERA_ID` | ✓ | Kamera-ID (siehe unten) |
+| `DOORBELL_NAME` | – | Namensfilter für Auto-Discovery |
+| `DOORBELL_MAC` | – | MAC-Adressfilter für Auto-Discovery |
+| `PROTECT_CAMERA_ID` | – | Direkte Kamera-ID (überschreibt Discovery) |
+| `SSL_VERIFY` | – | `1` = TLS-Zertifikat des NVR prüfen |
 | `SERVER_PORT` | – | HTTP-Port (Standard: 8080) |
 | `HTTPS` | – | `1` für HTTPS-Modus |
 | `SSL_KEY` / `SSL_CERT` | – | Pfad zu Zertifikat/Key |
 | `MEDIA_RECORDER_TIMESLICE_MS` | – | Audio-Chunk-Größe in ms (Standard: 500) |
 
-### Kamera-ID ermitteln
+### Türklingel-Erkennung
 
 ```bash
-npm start   # listet alle Kameras mit IDs auf
+npm start   # zeigt alle Geräte mit isDoorbell-Flag
 ```
+
+Bei mehreren Türklingeln kann `DOORBELL_NAME` oder `DOORBELL_MAC` gesetzt werden.
 
 ## API-Routen
 

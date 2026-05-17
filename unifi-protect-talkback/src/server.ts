@@ -16,12 +16,18 @@ import {
   getChimeDevices,
   updateChimeDevice,
 } from "./protect-client.js";
-import type { ProtectSession, CameraDetails, Ringtone, ChimeDevice } from "./protect-client.js";
+import type { ProtectSession, Camera, CameraDetails, Ringtone, ChimeDevice } from "./protect-client.js";
 
 const HTML_PATH = path.join(process.cwd(), "web", "index.html");
 const HLS_DIR = path.join(os.tmpdir(), "protect-hls");
 
 fs.mkdirSync(HLS_DIR, { recursive: true });
+
+export type DiscoveryOptions = {
+  cameraId?: string;
+  doorbellName?: string;
+  doorbellMac?: string;
+};
 
 function inputFormat(mimeType: string): string {
   return mimeType.startsWith("audio/ogg") ? "ogg" : "webm";
@@ -115,15 +121,21 @@ class HlsManager {
 }
 
 export function startServer(
-  cameraId: string,
   session: ProtectSession,
   client: AxiosInstance,
-  serverPort = 8080
+  serverPort = 8080,
+  discovery: DiscoveryOptions = {}
 ): void {
   const timesliceMs = parseInt(process.env["MEDIA_RECORDER_TIMESLICE_MS"] ?? "500", 10);
   const useHttps = process.env["HTTPS"] === "1";
   const protectHost = process.env["PROTECT_HOST"] ?? "";
 
+  // ── Discovery state ──────────────────────────────────────────────────────────
+  let allCameras: Camera[] = [];
+  let doorbells: Camera[] = [];
+  let activeCameraId: string | null = null;
+
+  // ── Per-camera state ─────────────────────────────────────────────────────────
   let cameraDetails: CameraDetails | null = null;
   let cameraDetailsError: string | null = null;
   let hls: HlsManager | null = null;
@@ -131,8 +143,9 @@ export function startServer(
   let chimeDevices: ChimeDevice[] = [];
 
   const loadCameraDetails = async (): Promise<void> => {
+    if (!activeCameraId) return;
     try {
-      cameraDetails = await getCameraDetails(client, session, cameraId);
+      cameraDetails = await getCameraDetails(client, session, activeCameraId);
       const f = cameraDetails.featureFlags;
       console.log(`[server] camera: ${cameraDetails.name} | hasSpeaker=${f.hasSpeaker} hasLcdScreen=${f.hasLcdScreen}`);
       cameraDetailsError = null;
@@ -143,6 +156,7 @@ export function startServer(
   };
 
   const startHls = (): void => {
+    if (!activeCameraId) return;
     const channels = cameraDetails?.channels ?? [];
     const channel = channels.find((c) => c.isRtspEnabled) ?? channels[0];
     if (!channel?.rtspAlias || !protectHost) {
@@ -159,6 +173,7 @@ export function startServer(
   };
 
   const loadChimeData = async (): Promise<void> => {
+    if (!activeCameraId) return;
     try {
       [ringtones, chimeDevices] = await Promise.all([
         getRingtones(client, session),
@@ -170,22 +185,69 @@ export function startServer(
     }
   };
 
-  void loadCameraDetails().then(() => startHls());
-  void loadChimeData();
+  const activateCamera = (): void => {
+    void loadCameraDetails().then(() => startHls());
+    void loadChimeData();
+  };
 
-  // Log all cameras at startup
-  void getCameras(client, session).then((cams) => {
-    console.log(`[startup] ${cams.length} camera(s) found:`);
-    for (const c of cams) {
-      console.log(`[startup]   ${c.id}  ${c.name}  type=${c.type}  model=${c.model}  market=${c.marketName}  state=${c.state}`);
+  // ── Auto-discovery ───────────────────────────────────────────────────────────
+  const discoverDoorbell = async (): Promise<void> => {
+    try {
+      allCameras = await getCameras(client, session);
+      console.log(`[discovery] ${allCameras.length} device(s) found:`);
+      for (const c of allCameras) {
+        console.log(`[discovery]   ${c.id}  "${c.name}"  type=${c.type}  model=${c.model}  isDoorbell=${c.isDoorbell}  mac=${c.mac}`);
+      }
+
+      // Manual cameraId override wins
+      if (discovery.cameraId) {
+        activeCameraId = discovery.cameraId;
+        console.log(`[discovery] using manual PROTECT_CAMERA_ID: ${activeCameraId}`);
+        return;
+      }
+
+      let candidates = allCameras.filter((c) => c.isDoorbell);
+
+      if (discovery.doorbellName) {
+        const name = discovery.doorbellName.toLowerCase();
+        candidates = candidates.filter((c) => c.name.toLowerCase().includes(name));
+        console.log(`[discovery] filter by name "${discovery.doorbellName}": ${candidates.length} match(es)`);
+      }
+      if (discovery.doorbellMac) {
+        const mac = discovery.doorbellMac.toLowerCase().replace(/[:\-]/g, "");
+        candidates = candidates.filter((c) => c.mac.toLowerCase().replace(/[:\-]/g, "") === mac);
+        console.log(`[discovery] filter by MAC "${discovery.doorbellMac}": ${candidates.length} match(es)`);
+      }
+
+      doorbells = candidates;
+
+      if (candidates.length === 1) {
+        const chosen = candidates[0]!;
+        activeCameraId = chosen.id;
+        console.log(`[discovery] auto-selected: "${chosen.name}" (${activeCameraId})`);
+      } else if (candidates.length > 1) {
+        console.log(`[discovery] ${candidates.length} doorbells found — waiting for user selection`);
+      } else {
+        console.warn(`[discovery] no doorbell detected among ${allCameras.length} device(s)`);
+      }
+    } catch (err) {
+      console.error("[discovery] failed:", err instanceof Error ? err.message : err);
     }
-  }).catch((err: unknown) => {
-    console.error("[startup] getCameras failed:", err instanceof Error ? err.message : err);
+  };
+
+  void discoverDoorbell().then(() => {
+    if (activeCameraId) activateCamera();
   });
 
-  // Reload camera details periodically to pick up setting changes
-  setInterval(() => { void loadCameraDetails(); void loadChimeData(); }, 30_000);
+  // Reload periodically
+  setInterval(() => {
+    if (activeCameraId) {
+      void loadCameraDetails();
+      void loadChimeData();
+    }
+  }, 30_000);
 
+  // ── Request handler ──────────────────────────────────────────────────────────
   const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const url = req.url ?? "/";
     const method = req.method ?? "GET";
@@ -233,15 +295,66 @@ export function startServer(
       return;
     }
 
-    // ── API routes ──────────────────────────────────────────────────────
+    // ── Device discovery API ─────────────────────────────────────────────────
+
+    if (url === "/api/devices" && method === "GET") {
+      json(res, {
+        devices: allCameras.map((c) => ({
+          id: c.id,
+          name: c.name,
+          model: c.model,
+          marketName: c.marketName,
+          mac: c.mac,
+          host: c.host,
+          isDoorbell: c.isDoorbell,
+          selected: c.id === activeCameraId,
+        })),
+        doorbells: doorbells.map((c) => c.id),
+        activeCameraId,
+      });
+      return;
+    }
+
+    if (url === "/api/devices/select" && method === "POST") {
+      const body = await parseBody(req);
+      const id = typeof body["id"] === "string" ? body["id"] : null;
+      const mac = typeof body["mac"] === "string" ? body["mac"] : null;
+
+      let target: Camera | undefined;
+      if (id) {
+        target = allCameras.find((c) => c.id === id);
+      } else if (mac) {
+        const norm = mac.toLowerCase().replace(/[:\-]/g, "");
+        target = allCameras.find((c) => c.mac.toLowerCase().replace(/[:\-]/g, "") === norm);
+      }
+
+      if (!target) {
+        json(res, { error: "Device not found" }, 404); return;
+      }
+
+      activeCameraId = target.id;
+      console.log(`[discovery] user selected: "${target.name}" (${activeCameraId})`);
+
+      hls?.stop();
+      hls = null;
+      cameraDetails = null;
+      cameraDetailsError = null;
+
+      activateCamera();
+      json(res, { ok: true, id: target.id, name: target.name });
+      return;
+    }
+
+    // ── Camera API ───────────────────────────────────────────────────────────
 
     if (url === "/api/status" && method === "GET") {
       json(res, {
-        nvr: { connected: !cameraDetailsError, error: cameraDetailsError },
+        nvr: { connected: !!activeCameraId && !cameraDetailsError, error: cameraDetailsError },
         camera: cameraDetails
           ? { id: cameraDetails.id, name: cameraDetails.name, type: cameraDetails.type, state: cameraDetails.state }
           : null,
         stream: { hlsReady: hls?.isReady() ?? false, hlsError: hls?.getError() ?? null },
+        activeCameraId,
       });
       return;
     }
@@ -274,9 +387,10 @@ export function startServer(
     }
 
     if (url === "/api/settings" && method === "POST") {
+      if (!activeCameraId) { json(res, { error: "No doorbell selected" }, 503); return; }
       const body = await parseBody(req);
       try {
-        await updateCameraSettings(client, session, cameraId, body);
+        await updateCameraSettings(client, session, activeCameraId, body);
         await loadCameraDetails();
         json(res, { ok: true });
       } catch (err) {
@@ -286,10 +400,11 @@ export function startServer(
     }
 
     if (url === "/api/display-message" && method === "POST") {
+      if (!activeCameraId) { json(res, { error: "No doorbell selected" }, 503); return; }
       const body = await parseBody(req);
       const message = (body["message"] ?? null) as { type: string; text?: string } | null;
       try {
-        await setDisplayMessage(client, session, cameraId, message);
+        await setDisplayMessage(client, session, activeCameraId, message);
         await loadCameraDetails();
         json(res, { ok: true });
       } catch (err) {
@@ -309,7 +424,6 @@ export function startServer(
             responseType: "arraybuffer",
           }
         );
-        // axios Node.js may return ArrayBuffer or Buffer depending on version
         const raw = audioRes.data as ArrayBuffer | Buffer;
         const data = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
         const ct = (audioRes.headers["content-type"] as string | undefined) ?? "audio/mpeg";
@@ -338,7 +452,7 @@ export function startServer(
         state: ch.state,
         masterVolume: ch.volume,
         masterRepeatTimes: ch.repeatTimes,
-        cameraRing: ch.ringSettings.find((r) => r.cameraId === cameraId) ?? null,
+        cameraRing: ch.ringSettings.find((r) => r.cameraId === activeCameraId) ?? null,
         supportCustomRingtone: ch.featureFlags.supportCustomRingtone,
       }));
 
@@ -358,10 +472,10 @@ export function startServer(
     }
 
     if (url === "/api/chime-settings" && method === "POST") {
+      if (!activeCameraId) { json(res, { error: "No doorbell selected" }, 503); return; }
       const body = await parseBody(req);
       const errors: string[] = [];
 
-      // Update doorbell speaker ring settings
       if (body["doorbellRing"]) {
         const dr = body["doorbellRing"] as Record<string, unknown>;
         const patch: Record<string, unknown> = {};
@@ -370,28 +484,27 @@ export function startServer(
         if (typeof dr["repeatTimes"] === "number") patch["repeatTimes"] = dr["repeatTimes"];
         if (Object.keys(patch).length > 0) {
           try {
-            await updateCameraSettings(client, session, cameraId, { speakerSettings: patch });
+            await updateCameraSettings(client, session, activeCameraId, { speakerSettings: patch });
           } catch (err) {
             errors.push(`doorbell: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
 
-      // Update PoE chime ring settings
       if (body["chimeId"] && body["chimeRing"]) {
         const chimeId = String(body["chimeId"]);
         const cr = body["chimeRing"] as Record<string, unknown>;
         const chime = chimeDevices.find((c) => c.id === chimeId);
         if (chime) {
-          const existingRs = chime.ringSettings.find((r) => r.cameraId === cameraId);
+          const existingRs = chime.ringSettings.find((r) => r.cameraId === activeCameraId);
           const updatedRs = {
-            cameraId,
+            cameraId: activeCameraId,
             volume: typeof cr["cameraVolume"] === "number" ? cr["cameraVolume"] : (existingRs?.volume ?? 100),
             ringtoneId: typeof cr["ringtoneId"] === "string" ? cr["ringtoneId"] : (existingRs?.ringtoneId ?? ""),
             repeatTimes: typeof cr["repeatTimes"] === "number" ? cr["repeatTimes"] : (existingRs?.repeatTimes ?? 1),
           };
           const newRingSettings = chime.ringSettings
-            .filter((r) => r.cameraId !== cameraId)
+            .filter((r) => r.cameraId !== activeCameraId)
             .concat(updatedRs);
 
           const chimePatch: Record<string, unknown> = { ringSettings: newRingSettings };
@@ -409,34 +522,27 @@ export function startServer(
       await loadChimeData();
       await loadCameraDetails();
 
-      if (errors.length > 0) {
-        json(res, { ok: false, errors }, 500);
-      } else {
-        json(res, { ok: true });
-      }
+      json(res, errors.length > 0 ? { ok: false, errors } : { ok: true });
       return;
     }
 
+    // ── Debug ─────────────────────────────────────────────────────────────────
+
     if (url === "/api/debug/devices" && method === "GET") {
       try {
-        const [cameras, chimes] = await Promise.all([
-          getCameras(client, session),
-          getChimeDevices(client, session),
-        ]);
+        // Use cached allCameras + chimes if available, otherwise fetch fresh
+        const [cameras, chimes] = allCameras.length > 0
+          ? [allCameras, chimeDevices]
+          : await Promise.all([getCameras(client, session), getChimeDevices(client, session)]);
+
         const devices = [
           ...cameras.map((c) => ({
-            id: c.id,
-            name: c.name,
-            type: c.type,
-            model: c.model,
-            marketName: c.marketName,
+            id: c.id, name: c.name, type: c.type, model: c.model, marketName: c.marketName,
+            mac: c.mac, host: c.host, isDoorbell: c.isDoorbell,
           })),
           ...chimes.map((c) => ({
-            id: c.id,
-            name: c.name,
-            type: c.type,
-            model: "",
-            marketName: "",
+            id: c.id, name: c.name, type: c.type, model: "", marketName: "",
+            mac: "", host: "", isDoorbell: false,
           })),
         ];
         json(res, { devices });
@@ -469,7 +575,7 @@ export function startServer(
   const proto = useHttps ? "https" : "http";
   if (useHttps) console.log("[server] HTTPS enabled");
 
-  // ── WebSocket talkback ───────────────────────────────────────────────
+  // ── WebSocket talkback ───────────────────────────────────────────────────────
   const wss = new WebSocketServer({ server: httpServer, path: "/audio" });
   let sessionActive = false;
 
@@ -479,9 +585,14 @@ export function startServer(
       browserWs.close(1008, "busy");
       return;
     }
+    if (!activeCameraId) {
+      browserWs.close(1011, "no doorbell selected");
+      return;
+    }
     sessionActive = true;
     console.log("[server] browser connected");
 
+    const cameraIdSnapshot = activeCameraId;
     let ffmpeg: ReturnType<typeof spawn> | null = null;
     let talkbackWs: WebSocket | null = null;
     let sessionStart = 0;
@@ -498,7 +609,7 @@ export function startServer(
       const fmt = inputFormat(mimeType);
       console.log(`[server] init mimeType=${mimeType} → ffmpeg -f ${fmt}`);
       try {
-        const talkbackUrl = await getTalkbackWsUrl(client, session, cameraId);
+        const talkbackUrl = await getTalkbackWsUrl(client, session, cameraIdSnapshot);
         talkbackWs = new WebSocket(talkbackUrl, {
           rejectUnauthorized: false,
           headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken },

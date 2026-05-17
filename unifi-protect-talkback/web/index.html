@@ -400,6 +400,48 @@
 
     .save-feedback.err { color: var(--red); }
 
+    /* ── Device discovery ──────────────────────────── */
+    #discovery-screen {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 0.9rem;
+    }
+
+    .device-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .device-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.18rem;
+      text-align: left;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #222;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+      width: 100%;
+    }
+
+    .device-card:hover { background: #2a2a2a; border-color: var(--blue); }
+    .device-card strong { font-size: 0.88rem; }
+    .device-card .dc-sub { font-size: 0.75rem; color: var(--muted); }
+    .device-card .dc-mac { font-size: 0.68rem; color: #444; font-family: ui-monospace, monospace; }
+
+    .discovery-note {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      line-height: 1.5;
+    }
+
+    .discovery-note.err { color: var(--red); }
+
     /* ── Log ────────────────────────────────────────── */
     #log {
       font-family: ui-monospace, 'Cascadia Code', monospace;
@@ -427,6 +469,14 @@
   <h1>🔔 Türklingel</h1>
   <span class="badge" id="nvr-badge">Verbinde…</span>
 </header>
+
+<!-- Device discovery (shown when auto-discovery needs user input) -->
+<div id="discovery-screen" style="display:none">
+  <div class="card" style="max-width:500px;margin:0 auto">
+    <div class="card-title" id="discovery-title">Türklingel wird gesucht…</div>
+    <div id="discovery-content"><div class="na">Verbinde…</div></div>
+  </div>
+</div>
 
 <main>
 
@@ -510,11 +560,94 @@ function log(msg, type = 'info') {
 // ── Init ─────────────────────────────────────────────────
 async function init() {
   try { cfg = await fetch('/config.json').then(r => r.json()); } catch {}
+  const ready = await checkDeviceState();
+  if (!ready) return;
   await loadStatus();
   await loadSettings();
   await loadChimeSettings();
   startStream();
   setupTalkback();
+}
+
+// ── Device discovery ──────────────────────────────────────
+async function checkDeviceState() {
+  try {
+    const d = await fetch('/api/devices').then(r => r.json());
+    if (d.activeCameraId) return true;
+    showDiscoveryScreen(d);
+    return false;
+  } catch (e) {
+    log('Geräte-Erkennung fehlgeschlagen: ' + e.message, 'err');
+    return true; // proceed — routes will return 503 if needed
+  }
+}
+
+function showDiscoveryScreen(d) {
+  document.getElementById('discovery-screen').style.display = '';
+  document.querySelector('main').style.display = 'none';
+
+  const title = document.getElementById('discovery-title');
+  const content = document.getElementById('discovery-content');
+
+  const doorbells = (d.devices || []).filter(dev => dev.isDoorbell);
+  const allDevices = d.devices || [];
+
+  if (doorbells.length > 1) {
+    title.textContent = 'Mehrere Türklingeln gefunden';
+    content.innerHTML = `
+      <p class="discovery-note">Bitte wähle die gewünschte Türklingel aus:</p>
+      <div class="device-list">${doorbells.map(dev => deviceCardHtml(dev)).join('')}</div>`;
+  } else {
+    title.textContent = 'Keine Türklingel erkannt';
+    content.innerHTML = `
+      <p class="discovery-note err">Es wurde keine Türklingel automatisch erkannt.</p>
+      ${allDevices.length > 0
+        ? `<p class="discovery-note">Gefundene Geräte — bitte manuell auswählen:</p>
+           <div class="device-list">${allDevices.map(dev => deviceCardHtml(dev)).join('')}</div>`
+        : `<p class="discovery-note">Keine Geräte gefunden. Bitte NVR-Verbindung prüfen.</p>`
+      }`;
+  }
+
+  content.querySelectorAll('.device-card').forEach(btn => {
+    btn.addEventListener('click', () => selectDevice(btn.dataset.id));
+  });
+}
+
+function deviceCardHtml(dev) {
+  const label = dev.marketName || dev.model || dev.type || 'Unbekannt';
+  return `<button class="device-card" data-id="${dev.id}">
+    <strong>${dev.name}</strong>
+    <span class="dc-sub">${label}</span>
+    ${dev.mac ? `<span class="dc-mac">${dev.mac}</span>` : ''}
+  </button>`;
+}
+
+async function selectDevice(id) {
+  const content = document.getElementById('discovery-content');
+  content.innerHTML += '<p class="discovery-note" style="margin-top:0.75rem">Verbinde…</p>';
+  try {
+    const r = await fetch('/api/devices/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error ?? 'Auswahl fehlgeschlagen');
+
+    document.getElementById('discovery-screen').style.display = 'none';
+    document.querySelector('main').style.display = '';
+    log(`Gerät ausgewählt: ${j.name}`, 'ok');
+
+    await loadStatus();
+    await loadSettings();
+    await loadChimeSettings();
+    startStream();
+    setupTalkback();
+  } catch (e) {
+    log('Auswahl-Fehler: ' + e.message, 'err');
+    const last = content.querySelector('p:last-child');
+    if (last) { last.textContent = 'Fehler: ' + e.message; last.className = 'discovery-note err'; }
+  }
 }
 
 // ── Status ───────────────────────────────────────────────
