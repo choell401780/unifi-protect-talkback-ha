@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.example
+.claude/
+node_modules/
+dist/
+certs/
+samples/
+docs/
+addon/
+*.log
+*.md
+DOCS.md
+README.md
+coverage/
+.DS_Store

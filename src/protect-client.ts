@@ -189,3 +189,197 @@ export async function getCameras(
   console.log(`[getCameras] found ${cameras.length} camera(s)`);
   return cameras;
 }
+
+export type CameraChannel = {
+  id: string;
+  name: string;
+  rtspAlias: string;
+  isRtspEnabled: boolean;
+  width: number;
+  height: number;
+};
+
+export type CameraDetails = {
+  id: string;
+  name: string;
+  type: string;
+  state: string;
+  channels: CameraChannel[];
+  speakerSettings: {
+    areSystemSoundsEnabled: boolean;
+    isEnabled: boolean;
+    volume: number;
+    ringVolume: number | null;
+    ringtoneId: string | null;
+    repeatTimes: number | null;
+    speakerVolume: number | null;
+  } | null;
+  micVolume: number | null;
+  lcdMessage: { type: string; text: string; resetAt: number | null } | null;
+  featureFlags: {
+    hasSpeaker: boolean;
+    hasLcdScreen: boolean;
+    hasChime: boolean;
+    supportCustomRingtone: boolean;
+  };
+};
+
+export async function getCameraDetails(
+  client: AxiosInstance,
+  session: ProtectSession,
+  cameraId: string
+): Promise<CameraDetails> {
+  const res = await client.get(`/proxy/protect/api/cameras/${cameraId}`, {
+    headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken },
+  });
+  const cam = res.data as Record<string, unknown>;
+
+  const channels: CameraChannel[] = Array.isArray(cam["channels"])
+    ? (cam["channels"] as Array<Record<string, unknown>>).map((ch) => ({
+        id: String(ch["id"] ?? ""),
+        name: String(ch["name"] ?? ""),
+        rtspAlias: String(ch["rtspAlias"] ?? ""),
+        isRtspEnabled: Boolean(ch["isRtspEnabled"]),
+        width: Number(ch["width"] ?? 0),
+        height: Number(ch["height"] ?? 0),
+      }))
+    : [];
+
+  const flags = (cam["featureFlags"] as Record<string, unknown>) ?? {};
+  const speaker = cam["speakerSettings"] as Record<string, unknown> | null | undefined;
+  const lcd = cam["lcdMessage"] as Record<string, unknown> | null | undefined;
+
+  return {
+    id: String(cam["id"] ?? ""),
+    name: String(cam["name"] ?? ""),
+    type: String(cam["type"] ?? ""),
+    state: String(cam["state"] ?? ""),
+    channels,
+    speakerSettings: speaker
+      ? {
+          areSystemSoundsEnabled: Boolean(speaker["areSystemSoundsEnabled"]),
+          isEnabled: Boolean(speaker["isEnabled"]),
+          volume: Number(speaker["volume"] ?? 0),
+          ringVolume: typeof speaker["ringVolume"] === "number" ? speaker["ringVolume"] : null,
+          ringtoneId: typeof speaker["ringtoneId"] === "string" ? speaker["ringtoneId"] : null,
+          repeatTimes: typeof speaker["repeatTimes"] === "number" ? speaker["repeatTimes"] : null,
+          speakerVolume: typeof speaker["speakerVolume"] === "number" ? speaker["speakerVolume"] : null,
+        }
+      : null,
+    micVolume: typeof cam["micVolume"] === "number" ? cam["micVolume"] : null,
+    lcdMessage: lcd
+      ? {
+          type: String(lcd["type"] ?? ""),
+          text: String(lcd["text"] ?? ""),
+          resetAt: typeof lcd["resetAt"] === "number" ? lcd["resetAt"] : null,
+        }
+      : null,
+    featureFlags: {
+      hasSpeaker: Boolean(flags["hasSpeaker"]),
+      hasLcdScreen: Boolean(flags["hasLcdScreen"]),
+      hasChime: Boolean(flags["hasChime"]),
+      supportCustomRingtone: Boolean(flags["supportCustomRingtone"]),
+    },
+  };
+}
+
+export async function updateCameraSettings(
+  client: AxiosInstance,
+  session: ProtectSession,
+  cameraId: string,
+  settings: Record<string, unknown>
+): Promise<void> {
+  await client.patch(`/proxy/protect/api/cameras/${cameraId}`, settings, {
+    headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken },
+  });
+}
+
+export async function setDisplayMessage(
+  client: AxiosInstance,
+  session: ProtectSession,
+  cameraId: string,
+  message: { type: string; text?: string; resetAt?: number | null } | null
+): Promise<void> {
+  await client.patch(
+    `/proxy/protect/api/cameras/${cameraId}`,
+    { lcdMessage: message },
+    { headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken } }
+  );
+}
+
+export type Ringtone = {
+  id: string;
+  name: string;
+  isDefault: boolean;
+};
+
+export type ChimeRingSettings = {
+  cameraId: string;
+  volume: number;
+  ringtoneId: string;
+  repeatTimes: number;
+};
+
+export type ChimeDevice = {
+  id: string;
+  name: string;
+  type: string;
+  state: string;
+  volume: number;
+  repeatTimes: number;
+  ringSettings: ChimeRingSettings[];
+  featureFlags: { supportCustomRingtone: boolean };
+};
+
+export async function getRingtones(
+  client: AxiosInstance,
+  session: ProtectSession
+): Promise<Ringtone[]> {
+  const res = await client.get("/proxy/protect/api/ringtones", {
+    headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken },
+  });
+  return (res.data as Array<Record<string, unknown>>).map((r) => ({
+    id: String(r["id"] ?? ""),
+    name: String(r["name"] ?? ""),
+    isDefault: Boolean(r["isDefault"]),
+  }));
+}
+
+export async function getChimeDevices(
+  client: AxiosInstance,
+  session: ProtectSession
+): Promise<ChimeDevice[]> {
+  const res = await client.get("/proxy/protect/api/chimes", {
+    headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken },
+  });
+  return (res.data as Array<Record<string, unknown>>).map((c) => {
+    const raw = (c["ringSettings"] ?? []) as Array<Record<string, unknown>>;
+    const flags = (c["featureFlags"] as Record<string, unknown>) ?? {};
+    return {
+      id: String(c["id"] ?? ""),
+      name: String(c["name"] ?? ""),
+      type: String(c["type"] ?? ""),
+      state: String(c["state"] ?? ""),
+      volume: Number(c["volume"] ?? 0),
+      repeatTimes: Number(c["repeatTimes"] ?? 1),
+      ringSettings: raw.map((rs) => ({
+        cameraId: String(rs["cameraId"] ?? ""),
+        volume: Number(rs["volume"] ?? 0),
+        ringtoneId: String(rs["ringtoneId"] ?? ""),
+        repeatTimes: Number(rs["repeatTimes"] ?? 1),
+      })),
+      featureFlags: { supportCustomRingtone: Boolean(flags["supportCustomRingtone"]) },
+    };
+  });
+}
+
+export async function updateChimeDevice(
+  client: AxiosInstance,
+  session: ProtectSession,
+  chimeId: string,
+  data: Record<string, unknown>
+): Promise<void> {
+  await client.patch(`/proxy/protect/api/chimes/${chimeId}`, data, {
+    headers: { Cookie: session.cookie, "X-CSRF-Token": session.csrfToken },
+  });
+}

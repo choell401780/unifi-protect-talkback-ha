@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Türklingel</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f0f;
+      --card: #181818;
+      --border: #2c2c2c;
+      --text: #e0e0e0;
+      --muted: #777;
+      --green: #4caf50;
+      --red: #ef5350;
+      --blue: #42a5f5;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 1rem;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    header h1 { font-size: 1rem; font-weight: 600; }
+
+    .badge {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: #2c2c2c;
+      color: var(--muted);
+    }
+    .badge.ok  { background: #1a2e1a; color: var(--green); }
+    .badge.err { background: #2e1a1a; color: var(--red); }
+
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 0.9rem;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.9rem;
+    }
+
+    @media (min-width: 680px) {
+      main { grid-template-columns: 1fr 1fr; }
+      #stream-card { grid-column: 1 / -1; }
+      #log-card    { grid-column: 1 / -1; }
+      /* Talkback + Display nebeneinander (Zeile 2),
+         Chime + Volume nebeneinander (Zeile 3) — auto-flow */
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .card-title {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Video ──────────────────────────────────────── */
+    .video-wrap {
+      position: relative;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+    }
+
+    #video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .video-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      background: rgba(0,0,0,0.75);
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .video-overlay.hidden { display: none; }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #333;
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .video-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 0.5rem;
+    }
+
+    #stream-label { font-size: 0.75rem; color: var(--muted); }
+
+    #mute-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.2rem 0.6rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    #mute-btn:hover { background: #252525; }
+
+    /* ── Talkback ───────────────────────────────────── */
+    .talk-row {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    #talk-btn {
+      width: 88px;
+      height: 88px;
+      border-radius: 50%;
+      border: 3px solid var(--green);
+      background: #162916;
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      touch-action: none;
+      transition: background 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+      line-height: 1.3;
+    }
+
+    #talk-btn.recording {
+      background: #2e1616;
+      border-color: var(--red);
+      animation: pulse 1s infinite;
+    }
+
+    #talk-btn:disabled { background: #1c1c1c; border-color: #3a3a3a; cursor: not-allowed; }
+
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(239,83,80,0.35); }
+      50%      { box-shadow: 0 0 0 10px rgba(239,83,80,0); }
+    }
+
+    #talk-status { font-size: 0.82rem; color: var(--muted); line-height: 1.6; }
+    #talk-status .ok  { color: var(--green); }
+    #talk-status .err { color: var(--red); }
+
+    /* ── Sliders ────────────────────────────────────── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.65rem;
+    }
+
+    .slider-row:last-child { margin-bottom: 0; }
+
+    .s-label {
+      width: 100px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
+
+    input[type="range"]:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .s-val {
+      width: 38px;
+      text-align: right;
+      font-size: 0.8rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+
+    .na { font-size: 0.78rem; color: var(--muted); font-style: italic; }
+
+    /* ── Display message ────────────────────────────── */
+    .preset-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .preset-btn {
+      padding: 0.35rem 0.7rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #222;
+      color: var(--text);
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    .preset-btn:hover { background: #2e2e2e; }
+
+    .msg-row {
+      display: flex;
+      gap: 0.45rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .msg-row input {
+      flex: 1;
+      padding: 0.38rem 0.6rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #222;
+      color: var(--text);
+      font-size: 0.82rem;
+      outline: none;
+      min-width: 0;
+    }
+
+    .msg-row input:focus { border-color: var(--blue); }
+
+    .btn-primary {
+      padding: 0.38rem 0.85rem;
+      border-radius: 6px;
+      border: none;
+      background: var(--blue);
+      color: #fff;
+      font-size: 0.82rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.12s;
+    }
+
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-ghost {
+      padding: 0.38rem 0.7rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+
+    .btn-ghost:hover { background: #222; }
+
+    #msg-current { font-size: 0.72rem; color: var(--muted); margin-top: 0.35rem; }
+
+    /* ── Door opener ────────────────────────────────── */
+    #door-btn {
+      width: 88px;
+      height: 88px;
+      border-radius: 50%;
+      border: 3px solid #546e7a;
+      background: #162028;
+      color: #b0bec5;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      touch-action: none;
+      transition: background 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+      line-height: 1.4;
+    }
+
+    #door-btn:hover { background: #1e2f3a; border-color: #78909c; color: #fff; }
+
+    /* ── Chime ──────────────────────────────────────── */
+    .chime-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+
+    .chime-section {
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+    }
+
+    .chime-section-title {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 0.65rem;
+      font-weight: 600;
+    }
+
+    .chime-device-badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      background: #1a2e1a;
+      color: var(--green);
+      margin-left: 0.4rem;
+      vertical-align: middle;
+    }
+
+    .chime-device-badge.offline { background: #2e1a1a; color: var(--red); }
+
+    .select-row {
+      display: flex;
+      gap: 0.45rem;
+      align-items: center;
+      margin-bottom: 0.65rem;
+    }
+
+    .select-row select { margin-bottom: 0; flex: 1; }
+
+    .preview-btn {
+      padding: 0.38rem 0.6rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.82rem;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      min-width: 36px;
+      text-align: center;
+    }
+
+    .preview-btn:hover { background: #252525; color: var(--text); }
+    .preview-btn.playing { color: var(--blue); border-color: var(--blue); }
+
+    select {
+      width: 100%;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #222;
+      color: var(--text);
+      font-size: 0.82rem;
+      outline: none;
+      margin-bottom: 0.65rem;
+      cursor: pointer;
+    }
+
+    select:focus { border-color: var(--blue); }
+    select:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .chime-save-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-top: 0.75rem;
+    }
+
+    .save-feedback {
+      font-size: 0.75rem;
+      color: var(--green);
+      flex: 1;
+    }
+
+    .save-feedback.err { color: var(--red); }
+
+    /* ── Log ────────────────────────────────────────── */
+    #log {
+      font-family: ui-monospace, 'Cascadia Code', monospace;
+      font-size: 0.72rem;
+      color: var(--muted);
+      max-height: 140px;
+      overflow-y: auto;
+      background: #0a0a0a;
+      border-radius: 6px;
+      padding: 0.5rem 0.6rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+
+    .le { display: flex; gap: 0.6rem; line-height: 1.55; }
+    .lt { color: #444; flex-shrink: 0; }
+    .lok { color: var(--green); }
+    .lerr { color: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🔔 Türklingel</h1>
+  <span class="badge" id="nvr-badge">Verbinde…</span>
+</header>
+
+<main>
+
+  <!-- Camera stream -->
+  <div class="card" id="stream-card">
+    <div class="card-title">Kamerabild · Live</div>
+    <div class="video-wrap">
+      <video id="video" autoplay muted playsinline></video>
+      <div class="video-overlay" id="stream-overlay">
+        <div class="spinner" id="stream-spinner"></div>
+        <span id="stream-msg">Stream lädt…</span>
+      </div>
+    </div>
+    <div class="video-controls">
+      <span id="stream-label"></span>
+      <button id="mute-btn">🔇 Ton ein</button>
+    </div>
+  </div>
+
+  <!-- Talkback (col 1, Zeile 2) -->
+  <div class="card">
+    <div class="card-title">Gegensprechen</div>
+    <div class="talk-row">
+      <button id="talk-btn">Sprechen<br>halten</button>
+      <button id="door-btn">🔓 Tür<br>öffnen</button>
+      <div id="talk-status">Bereit</div>
+    </div>
+  </div>
+
+  <!-- Display message (col 2, Zeile 2) -->
+  <div class="card">
+    <div class="card-title">Nachricht am Display</div>
+    <div id="msg-content"><div class="na">Lade…</div></div>
+  </div>
+
+  <!-- Chime / Ringtone (col 1, Zeile 3) -->
+  <div class="card" id="chime-card">
+    <div class="card-title">Klingelton</div>
+    <div id="chime-content"><div class="na">Lade…</div></div>
+  </div>
+
+  <!-- Volume (col 2, Zeile 3) -->
+  <div class="card">
+    <div class="card-title">Lautstärke</div>
+    <div id="vol-content"><div class="na">Lade…</div></div>
+  </div>
+
+  <!-- Log -->
+  <div class="card" id="log-card">
+    <div class="card-title">Protokoll</div>
+    <div id="log"></div>
+  </div>
+
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" crossorigin="anonymous"></script>
+<script>
+'use strict';
+
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/audio`;
+let cfg = { timesliceMs: 500 };
+let speakerTimer = null, micTimer = null;
+let hlsInstance = null;
+let hlsRetryCount = 0;
+let currentPreview = null;
+let currentPreviewBtn = null;
+
+// ── Log ─────────────────────────────────────────────────
+const logEl = document.getElementById('log');
+function log(msg, type = 'info') {
+  const d = document.createElement('div');
+  d.className = 'le';
+  const now = new Date();
+  const t = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+  const cls = type === 'ok' ? 'lok' : type === 'err' ? 'lerr' : '';
+  d.innerHTML = `<span class="lt">${t}</span><span class="${cls}">${msg}</span>`;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ── Init ─────────────────────────────────────────────────
+async function init() {
+  try { cfg = await fetch('/config.json').then(r => r.json()); } catch {}
+  await loadStatus();
+  await loadSettings();
+  await loadChimeSettings();
+  startStream();
+  setupTalkback();
+}
+
+// ── Status ───────────────────────────────────────────────
+async function loadStatus() {
+  const badge = document.getElementById('nvr-badge');
+  try {
+    const s = await fetch('/api/status').then(r => r.json());
+    if (s.nvr.connected) {
+      badge.textContent = s.camera?.name ?? 'Verbunden';
+      badge.className = 'badge ok';
+      log(`NVR verbunden: ${s.camera?.name} (${s.camera?.type})`, 'ok');
+    } else {
+      badge.textContent = 'Nicht erreichbar';
+      badge.className = 'badge err';
+      log(`NVR Fehler: ${s.nvr.error}`, 'err');
+    }
+  } catch (e) {
+    badge.textContent = 'Fehler';
+    badge.className = 'badge err';
+    log('Status-Abfrage fehlgeschlagen: ' + e.message, 'err');
+  }
+}
+
+// ── Stream ───────────────────────────────────────────────
+function showOverlay(msg, withSpinner = false) {
+  const ov = document.getElementById('stream-overlay');
+  document.getElementById('stream-spinner').style.display = withSpinner ? '' : 'none';
+  document.getElementById('stream-msg').textContent = msg;
+  ov.classList.remove('hidden');
+}
+
+function hideOverlay() {
+  document.getElementById('stream-overlay').classList.add('hidden');
+}
+
+function startStream() {
+  const video = document.getElementById('video');
+  const label = document.getElementById('stream-label');
+
+  if (typeof Hls === 'undefined') {
+    showOverlay('HLS.js nicht geladen (Internet erforderlich)');
+    log('HLS.js fehlt – CDN nicht erreichbar', 'err');
+    return;
+  }
+
+  showOverlay('Stream verbindet…', true);
+
+  if (Hls.isSupported()) {
+    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+
+    hlsInstance = new Hls({
+      debug: false,
+      enableWorker: true,
+      maxBufferLength: 8,
+      backBufferLength: 4,
+    });
+
+    hlsInstance.loadSource('/hls/stream.m3u8');
+    hlsInstance.attachMedia(video);
+
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+      hideOverlay();
+      hlsRetryCount = 0;
+      const lvl = hlsInstance.levels[hlsInstance.currentLevel];
+      label.textContent = lvl ? `${lvl.width}×${lvl.height}` : 'Live';
+      log('Stream bereit', 'ok');
+      video.play().catch(() => {});
+    });
+
+    hlsInstance.on(Hls.Events.ERROR, (_, data) => {
+      if (!data.fatal) return;
+      label.textContent = '';
+      hlsRetryCount++;
+      const delay = Math.min(5000 * hlsRetryCount, 30000);
+      showOverlay(`Verbindungsfehler – Retry in ${delay/1000}s…`);
+      log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}`, 'err');
+      hlsInstance.destroy(); hlsInstance = null;
+      setTimeout(() => startStream(), delay);
+    });
+
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = '/hls/stream.m3u8';
+    video.addEventListener('loadeddata', () => { hideOverlay(); log('Stream bereit (Safari HLS)', 'ok'); }, { once: true });
+    video.addEventListener('error', () => { showOverlay('Stream nicht verfügbar'); log('Stream-Fehler', 'err'); }, { once: true });
+  } else {
+    showOverlay('Browser unterstützt kein HLS');
+    log('HLS wird von diesem Browser nicht unterstützt', 'err');
+  }
+}
+
+// Mute toggle
+let videoMuted = true;
+document.getElementById('mute-btn').addEventListener('click', () => {
+  videoMuted = !videoMuted;
+  document.getElementById('video').muted = videoMuted;
+  document.getElementById('mute-btn').textContent = videoMuted ? '🔇 Ton ein' : '🔊 Ton aus';
+});
+
+// ── Settings ─────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const s = await fetch('/api/settings').then(r => r.json());
+    if (s.error) throw new Error(s.error);
+    renderVolume(s);
+    renderMessages(s);
+    log('Einstellungen geladen', 'ok');
+  } catch (e) {
+    document.getElementById('vol-content').innerHTML = `<div class="na">Fehler: ${e.message}</div>`;
+    document.getElementById('msg-content').innerHTML = `<div class="na">Fehler beim Laden</div>`;
+    log('Einstellungen Fehler: ' + e.message, 'err');
+  }
+}
+
+function renderVolume(s) {
+  const c = document.getElementById('vol-content');
+  const speaker = s.speakerSettings;
+  const mic = s.micVolume;
+  let html = '';
+
+  if (speaker !== null && speaker !== undefined) {
+    html += sliderRow('speaker-vol', 'Lautsprecher', speaker.volume, 'speaker-val');
+  } else {
+    html += `<div class="slider-row"><span class="s-label">Lautsprecher</span><span class="na">Nicht verfügbar</span></div>`;
+  }
+
+  if (mic !== null && mic !== undefined) {
+    html += sliderRow('mic-vol', 'Mikrofon', mic, 'mic-val');
+  } else {
+    html += `<div class="slider-row"><span class="s-label">Mikrofon</span><span class="na">Nicht verfügbar</span></div>`;
+  }
+
+  c.innerHTML = html;
+
+  const sv = document.getElementById('speaker-vol');
+  const mv = document.getElementById('mic-vol');
+
+  if (sv) {
+    sv.addEventListener('input', e => {
+      document.getElementById('speaker-val').textContent = e.target.value + '%';
+      clearTimeout(speakerTimer);
+      speakerTimer = setTimeout(() => saveSetting({ speakerSettings: { volume: +e.target.value } }), 500);
+    });
+  }
+  if (mv) {
+    mv.addEventListener('input', e => {
+      document.getElementById('mic-val').textContent = e.target.value + '%';
+      clearTimeout(micTimer);
+      micTimer = setTimeout(() => saveSetting({ micVolume: +e.target.value }), 500);
+    });
+  }
+}
+
+function sliderRow(id, label, val, valId, min = 0, max = 100, step = 1) {
+  const suffix = max <= 20 ? 'x' : '%';
+  return `<div class="slider-row">
+    <span class="s-label">${label}</span>
+    <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}">
+    <span class="s-val" id="${valId}">${val}${suffix}</span>
+  </div>`;
+}
+
+async function saveSetting(data) {
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    log('Einstellung gespeichert', 'ok');
+  } catch (e) {
+    log('Speicher-Fehler: ' + e.message, 'err');
+  }
+}
+
+// ── Display message ──────────────────────────────────────
+const PRESETS = [
+  { label: 'Paket abstellen', text: 'Bitte Paket abstellen' },
+  { label: 'Bin gleich da',   text: 'Bin gleich da'          },
+  { label: 'Bitte warten',    text: 'Bitte warten'           },
+  { label: 'Kein Interesse',  text: 'Kein Interesse'         },
+];
+
+function renderMessages(s) {
+  const c = document.getElementById('msg-content');
+  if (!s.featureFlags?.hasLcdScreen) {
+    c.innerHTML = '<div class="na">Dieses Gerät hat kein Display.</div>';
+    return;
+  }
+  const current = s.lcdMessage?.text || '';
+  c.innerHTML = `
+    <div class="preset-grid">
+      ${PRESETS.map(p => `<button class="preset-btn" data-text="${p.text}">${p.label}</button>`).join('')}
+    </div>
+    <div class="msg-row">
+      <input type="text" id="msg-input" placeholder="Eigene Nachricht…" maxlength="64">
+      <button class="btn-primary" id="msg-send">Anzeigen</button>
+      <button class="btn-ghost" id="msg-clear">Löschen</button>
+    </div>
+    <div id="msg-current">${current ? 'Aktuell: ' + current : 'Kein Text aktiv'}</div>`;
+
+  c.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => sendMessage({ type: 'CUSTOM_MESSAGE', text: btn.dataset.text }));
+  });
+  document.getElementById('msg-send').addEventListener('click', () => {
+    const t = document.getElementById('msg-input').value.trim();
+    if (t) sendMessage({ type: 'CUSTOM_MESSAGE', text: t });
+  });
+  document.getElementById('msg-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('msg-send').click();
+  });
+  document.getElementById('msg-clear').addEventListener('click', () => sendMessage(null));
+}
+
+async function sendMessage(msg) {
+  try {
+    const r = await fetch('/api/display-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg }),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const el = document.getElementById('msg-current');
+    if (el) el.textContent = msg ? 'Aktuell: ' + (msg.text ?? msg.type) : 'Kein Text aktiv';
+    log(msg ? `Nachricht gesetzt: "${msg.text ?? msg.type}"` : 'Nachricht gelöscht', 'ok');
+  } catch (e) {
+    log('Nachricht-Fehler: ' + e.message, 'err');
+  }
+}
+
+// ── Ringtone preview ─────────────────────────────────────
+function previewRingtone(selectId, btn) {
+  const id = document.getElementById(selectId)?.value;
+  if (!id) return;
+
+  // Toggle off if same button is playing
+  if (currentPreview) {
+    currentPreview.pause();
+    currentPreview = null;
+    if (currentPreviewBtn) {
+      currentPreviewBtn.textContent = '▶';
+      currentPreviewBtn.classList.remove('playing');
+    }
+    if (currentPreviewBtn === btn) { currentPreviewBtn = null; return; }
+    currentPreviewBtn = null;
+  }
+
+  const audio = new Audio(`/api/ringtone-audio/${id}`);
+  audio.volume = 0.8;
+  currentPreview = audio;
+  currentPreviewBtn = btn;
+  btn.textContent = '■';
+  btn.classList.add('playing');
+
+  audio.addEventListener('ended', () => {
+    if (currentPreview === audio) { currentPreview = null; }
+    if (currentPreviewBtn === btn) { currentPreviewBtn = null; }
+    btn.textContent = '▶';
+    btn.classList.remove('playing');
+  });
+
+  audio.addEventListener('error', () => {
+    currentPreview = null; currentPreviewBtn = null;
+    btn.textContent = '▶';
+    btn.classList.remove('playing');
+    log('Keine Vorschau für diesen Klingelton verfügbar', 'err');
+  });
+
+  audio.play().catch(e => {
+    currentPreview = null; currentPreviewBtn = null;
+    btn.textContent = '▶';
+    btn.classList.remove('playing');
+    log('Vorschau nicht möglich: ' + e.message, 'err');
+  });
+}
+
+// ── Chime / Ringtone ─────────────────────────────────────
+async function loadChimeSettings() {
+  const c = document.getElementById('chime-content');
+  try {
+    const s = await fetch('/api/chime-settings').then(r => r.json());
+    if (s.error) throw new Error(s.error);
+    renderChimeSettings(s, c);
+    log('Klingelton-Einstellungen geladen', 'ok');
+  } catch (e) {
+    c.innerHTML = `<div class="na">Fehler: ${e.message}</div>`;
+    log('Klingelton-Fehler: ' + e.message, 'err');
+  }
+}
+
+function renderChimeSettings(s, container) {
+  const ringtones = s.ringtones || [];
+  const rtOptions = ringtones.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
+
+  let html = '<div class="chime-grid">';
+
+  // ── Doorbell speaker section ──
+  if (s.doorbellRing) {
+    const dr = s.doorbellRing;
+    const ringVol = dr.ringVolume ?? 50;
+    const repeatTimes = dr.repeatTimes ?? 1;
+    const curRtId = dr.ringtoneId ?? '';
+    const rtSelect = ringtones.length > 0
+      ? `<div class="select-row">
+           <select id="db-ringtone">${ringtones.map(r => `<option value="${r.id}"${r.id===curRtId?' selected':''}>${r.name}</option>`).join('')}</select>
+           <button class="preview-btn" id="db-preview" title="Vorschau abspielen">▶</button>
+         </div>`
+      : `<div class="na">Keine Klingeltöne verfügbar</div>`;
+
+    html += `
+      <div class="chime-section">
+        <div class="chime-section-title">Türklingel (intern)</div>
+        <div style="margin-bottom:0.5rem;font-size:0.78rem;color:var(--muted)">Klingelton</div>
+        ${rtSelect}
+        ${sliderRow('db-ring-vol', 'Lautstärke', ringVol, 'db-ring-val')}
+        ${sliderRow('db-repeat', 'Wiederholung', repeatTimes, 'db-repeat-val', 1, 10, 1)}
+        <div class="chime-save-row">
+          <button class="btn-primary" id="db-save">Speichern</button>
+          <span class="save-feedback" id="db-feedback"></span>
+        </div>
+      </div>`;
+  } else {
+    html += `<div class="chime-section"><div class="na">Türklingel-Lautsprecher nicht verfügbar</div></div>`;
+  }
+
+  // ── PoE Chime sections ──
+  if (s.chimes && s.chimes.length > 0) {
+    for (const ch of s.chimes) {
+      const rs = ch.cameraRing;
+      const connected = ch.state === 'CONNECTED';
+      const cameraVol = rs?.volume ?? 100;
+      const chRptTimes = rs?.repeatTimes ?? 1;
+      const chRtId = rs?.ringtoneId ?? '';
+      const rtSel = ringtones.length > 0
+        ? `<div class="select-row">
+             <select id="ch-ringtone-${ch.id}">${ringtones.map(r => `<option value="${r.id}"${r.id===chRtId?' selected':''}>${r.name}</option>`).join('')}</select>
+             <button class="preview-btn" id="ch-preview-${ch.id}" title="Vorschau abspielen">▶</button>
+           </div>`
+        : `<div class="na">Keine Klingeltöne verfügbar</div>`;
+
+      html += `
+        <div class="chime-section">
+          <div class="chime-section-title">
+            ${ch.name}
+            <span class="chime-device-badge${connected?'':' offline'}">${connected ? 'Verbunden' : 'Offline'}</span>
+          </div>
+          <div style="margin-bottom:0.5rem;font-size:0.78rem;color:var(--muted)">Klingelton</div>
+          ${rtSel}
+          ${sliderRow(`ch-vol-${ch.id}`, 'Lautstärke', cameraVol, `ch-vol-val-${ch.id}`)}
+          ${sliderRow(`ch-rpt-${ch.id}`, 'Wiederholung', chRptTimes, `ch-rpt-val-${ch.id}`, 1, 10, 1)}
+          <div class="chime-save-row">
+            <button class="btn-primary" id="ch-save-${ch.id}" data-chime-id="${ch.id}">Speichern</button>
+            <span class="save-feedback" id="ch-feedback-${ch.id}"></span>
+          </div>
+        </div>`;
+    }
+  } else {
+    html += `<div class="chime-section"><div class="na">Kein PoE Chime verbunden</div></div>`;
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+
+  // Bind slider live-update labels
+  const bindSlider = (id, valId) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', e => {
+      const v = document.getElementById(valId);
+      if (v) v.textContent = e.target.value + (id.includes('repeat') ? 'x' : '%');
+    });
+  };
+
+  bindSlider('db-ring-vol', 'db-ring-val');
+  bindSlider('db-repeat', 'db-repeat-val');
+
+  for (const ch of (s.chimes || [])) {
+    bindSlider(`ch-vol-${ch.id}`, `ch-vol-val-${ch.id}`);
+    bindSlider(`ch-rpt-${ch.id}`, `ch-rpt-val-${ch.id}`);
+  }
+
+  // Preview buttons
+  const dbPrev = document.getElementById('db-preview');
+  if (dbPrev) dbPrev.addEventListener('click', () => previewRingtone('db-ringtone', dbPrev));
+
+  for (const ch of (s.chimes || [])) {
+    const pb = document.getElementById(`ch-preview-${ch.id}`);
+    if (pb) pb.addEventListener('click', () => previewRingtone(`ch-ringtone-${ch.id}`, pb));
+  }
+
+  // Doorbell save
+  const dbSave = document.getElementById('db-save');
+  if (dbSave) {
+    dbSave.addEventListener('click', async () => {
+      const feedback = document.getElementById('db-feedback');
+      dbSave.disabled = true;
+      try {
+        const body = {
+          doorbellRing: {
+            ringVolume: parseInt(document.getElementById('db-ring-vol')?.value ?? '50'),
+            repeatTimes: parseInt(document.getElementById('db-repeat')?.value ?? '1'),
+            ringtoneId: document.getElementById('db-ringtone')?.value ?? '',
+          }
+        };
+        const r = await fetch('/api/chime-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          feedback.textContent = 'Gespeichert ✓';
+          feedback.className = 'save-feedback';
+          log('Türklingel-Klingelton gespeichert', 'ok');
+        } else {
+          throw new Error((j.errors || [j.error]).join(', '));
+        }
+      } catch (e) {
+        feedback.textContent = 'Fehler: ' + e.message;
+        feedback.className = 'save-feedback err';
+        log('Speicher-Fehler: ' + e.message, 'err');
+      } finally {
+        dbSave.disabled = false;
+        setTimeout(() => { if (feedback) feedback.textContent = ''; }, 4000);
+      }
+    });
+  }
+
+  // Chime save buttons
+  for (const ch of (s.chimes || [])) {
+    const btn = document.getElementById(`ch-save-${ch.id}`);
+    if (!btn) continue;
+    btn.addEventListener('click', async () => {
+      const feedback = document.getElementById(`ch-feedback-${ch.id}`);
+      btn.disabled = true;
+      try {
+        const body = {
+          chimeId: ch.id,
+          chimeRing: {
+            cameraVolume: parseInt(document.getElementById(`ch-vol-${ch.id}`)?.value ?? '100'),
+            repeatTimes: parseInt(document.getElementById(`ch-rpt-${ch.id}`)?.value ?? '1'),
+            ringtoneId: document.getElementById(`ch-ringtone-${ch.id}`)?.value ?? '',
+          }
+        };
+        const r = await fetch('/api/chime-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          feedback.textContent = 'Gespeichert ✓';
+          feedback.className = 'save-feedback';
+          log(`Chime "${ch.name}" gespeichert`, 'ok');
+        } else {
+          throw new Error((j.errors || [j.error]).join(', '));
+        }
+      } catch (e) {
+        feedback.textContent = 'Fehler: ' + e.message;
+        feedback.className = 'save-feedback err';
+        log('Speicher-Fehler: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+        setTimeout(() => { if (feedback) feedback.textContent = ''; }, 4000);
+      }
+    });
+  }
+}
+
+// ── Talkback ─────────────────────────────────────────────
+function setupTalkback() {
+  const btn = document.getElementById('talk-btn');
+  const statusEl = document.getElementById('talk-status');
+
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    btn.disabled = true;
+    statusEl.innerHTML = '<span class="err">Mikrofon erfordert HTTPS oder localhost</span>';
+    log('Kein HTTPS – Mikrofon gesperrt', 'err');
+    return;
+  }
+
+  let state = 'idle', ws = null, recorder = null, stream = null;
+  let timer = null, t0 = 0;
+
+  function fmt(ms) {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  }
+
+  function setState(s, msg) {
+    state = s;
+    btn.classList.toggle('recording', s === 'recording');
+    btn.disabled = s === 'connecting' || s === 'stopping';
+    const L = { idle:'Sprechen\nhalten', connecting:'Verbinde…', recording:'Spricht…', stopping:'Stoppt…', error:'Fehler' };
+    btn.textContent = L[s] ?? s;
+    if (msg) statusEl.innerHTML = msg;
+    if (s === 'recording') {
+      t0 = Date.now();
+      timer = setInterval(() => { statusEl.textContent = `Aktiv ${fmt(Date.now()-t0)}`; }, 500);
+    } else {
+      clearInterval(timer); timer = null;
+    }
+  }
+
+  function releaseStream() { stream?.getTracks().forEach(t => t.stop()); stream = null; }
+
+  async function startTalk() {
+    if (state !== 'idle') return;
+    setState('connecting', 'Mikrofon anfordern…');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation: true, noiseSuppression: true, autoGainControl: true
+      }});
+    } catch (e) {
+      releaseStream();
+      setState('error', `<span class="err">Mikrofon-Fehler: ${e.message}</span>`);
+      setTimeout(() => setState('idle', 'Bereit'), 3000);
+      log('Mikrofon-Fehler: ' + e.message, 'err');
+      return;
+    }
+
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+                 : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')  ? 'audio/ogg;codecs=opus'
+                 : 'audio/webm';
+      ws.send(JSON.stringify({ type: 'init', mimeType: mime }));
+      recorder = new MediaRecorder(stream, { mimeType: mime });
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN) ws.send(e.data);
+      };
+      recorder.onstop = () => {
+        releaseStream(); recorder = null;
+        setTimeout(() => { ws?.close(); ws = null; }, 150);
+        setState('stopping', 'Stoppt…');
+      };
+      recorder.start(cfg.timesliceMs);
+      setState('recording', `<span class="ok">Verbunden</span> · ${mime.replace('audio/','')}`);
+      log('Talkback gestartet', 'ok');
+    };
+
+    ws.onerror = () => {
+      releaseStream();
+      setState('error', '<span class="err">Verbindungsfehler</span>');
+      setTimeout(() => setState('idle', 'Bereit'), 3000);
+      log('WebSocket-Fehler', 'err');
+    };
+
+    ws.onclose = e => {
+      ws = null;
+      if (e.code === 1008) {
+        setState('error', '<span class="err">Server belegt – nochmals versuchen</span>');
+        setTimeout(() => setState('idle', 'Bereit'), 3000);
+        log('Server belegt', 'err');
+      } else {
+        setState('idle', 'Bereit');
+        log('Talkback beendet');
+      }
+    };
+  }
+
+  function doStop() {
+    if (state !== 'recording') return;
+    if (!recorder || recorder.state === 'inactive') {
+      releaseStream(); ws?.close(); ws = null; setState('idle', 'Bereit'); return;
+    }
+    recorder.stop();
+  }
+
+  btn.addEventListener('mousedown',  () => startTalk());
+  btn.addEventListener('mouseup',    () => doStop());
+  btn.addEventListener('mouseleave', () => doStop());
+  btn.addEventListener('touchstart', e => { e.preventDefault(); startTalk(); });
+  btn.addEventListener('touchend',   e => { e.preventDefault(); doStop(); });
+
+  // Door opener placeholder
+  const doorBtn = document.getElementById('door-btn');
+  if (doorBtn) {
+    doorBtn.addEventListener('click', () => {
+      statusEl.innerHTML = '<span style="color:#ffa726">Türöffner ist noch nicht eingerichtet.</span>';
+      log('Türöffner: noch nicht eingerichtet', 'info');
+      setTimeout(() => {
+        if (state === 'idle') statusEl.textContent = 'Bereit';
+      }, 3000);
+    });
+  }
+}
+
+init();
+</script>
+</body>
+</html>

@@ -4,3 +4,7 @@ dist/
 .DS_Store
 *.log
 coverage/
+
+# Home Assistant Add-on runtime data
+/data/
+data/options.json
