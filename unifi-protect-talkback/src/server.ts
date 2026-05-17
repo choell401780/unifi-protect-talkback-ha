@@ -199,11 +199,37 @@ export function startServer(
         console.log(`[discovery]   ${c.id}  "${c.name}"  type=${c.type}  model=${c.model}  isDoorbell=${c.isDoorbell}  mac=${c.mac}`);
       }
 
-      // Manual cameraId override wins
+      // Resolve manual selector: match ID first, then name/marketName, then MAC
       if (discovery.cameraId) {
-        activeCameraId = discovery.cameraId;
-        console.log(`[discovery] using manual PROTECT_CAMERA_ID: ${activeCameraId}`);
-        return;
+        const selector = discovery.cameraId.trim();
+        console.log(`[discovery] configured selector: "${selector}"`);
+
+        let matched = allCameras.find((c) => c.id === selector);
+        let matchedBy = "id";
+
+        if (!matched) {
+          matched = allCameras.find(
+            (c) =>
+              c.name.toLowerCase() === selector.toLowerCase() ||
+              c.marketName.toLowerCase() === selector.toLowerCase(),
+          );
+          if (matched) matchedBy = "name";
+        }
+
+        if (!matched) {
+          const norm = selector.toLowerCase().replace(/[:\-]/g, "");
+          matched = allCameras.find((c) => c.mac.toLowerCase().replace(/[:\-]/g, "") === norm);
+          if (matched) matchedBy = "mac";
+        }
+
+        if (matched) {
+          activeCameraId = matched.id;
+          console.log(`[discovery] matched camera id:   ${matched.id}`);
+          console.log(`[discovery] matched camera name: "${matched.name}"`);
+          console.log(`[discovery] matched by:          ${matchedBy}`);
+          return;
+        }
+        console.warn(`[discovery] selector "${selector}" matched no camera — falling through to auto-discovery`);
       }
 
       let candidates = allCameras.filter((c) => c.isDoorbell);
