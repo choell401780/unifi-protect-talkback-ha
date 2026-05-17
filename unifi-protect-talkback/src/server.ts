@@ -45,7 +45,14 @@ function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> 
   });
 }
 
+function setCorsHeaders(res: http.ServerResponse): void {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
 function json(res: http.ServerResponse, data: unknown, status = 200): void {
+  setCorsHeaders(res);
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
@@ -278,14 +285,26 @@ export function startServer(
     const url = req.url ?? "/";
     const method = req.method ?? "GET";
 
-    // HTML pages
+    // CORS preflight
+    if (method === "OPTIONS") {
+      setCorsHeaders(res);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // HTML pages — frame-ancestors * allows embedding in HA panel_iframe / dashboard
     if (method === "GET" && (url === "/" || url === "/index.html" || url === "/push-to-talk.html")) {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Security-Policy": "frame-ancestors *",
+      });
       res.end(fs.readFileSync(HTML_PATH));
       return;
     }
 
     if (method === "GET" && url === "/config.json") {
+      setCorsHeaders(res);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ timesliceMs }));
       return;
