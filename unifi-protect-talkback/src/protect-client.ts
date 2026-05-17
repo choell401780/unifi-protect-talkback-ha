@@ -12,6 +12,8 @@ export type Camera = {
   name: string;
   type: string;
   state: string;
+  model: string;
+  marketName: string;
 };
 
 const agent = new https.Agent({ rejectUnauthorized: false });
@@ -184,6 +186,8 @@ export async function getCameras(
     name: c["name"] as string,
     type: c["type"] as string,
     state: c["state"] as string,
+    model: String(c["modelKey"] ?? c["model"] ?? ""),
+    marketName: String(c["marketName"] ?? ""),
   }));
 
   console.log(`[getCameras] found ${cameras.length} camera(s)`);

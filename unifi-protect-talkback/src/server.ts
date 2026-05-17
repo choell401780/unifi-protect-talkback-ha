@@ -8,6 +8,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import type { AxiosInstance } from "axios";
 import {
   getTalkbackWsUrl,
+  getCameras,
   getCameraDetails,
   updateCameraSettings,
   setDisplayMessage,
@@ -171,6 +172,16 @@ export function startServer(
 
   void loadCameraDetails().then(() => startHls());
   void loadChimeData();
+
+  // Log all cameras at startup
+  void getCameras(client, session).then((cams) => {
+    console.log(`[startup] ${cams.length} camera(s) found:`);
+    for (const c of cams) {
+      console.log(`[startup]   ${c.id}  ${c.name}  type=${c.type}  model=${c.model}  market=${c.marketName}  state=${c.state}`);
+    }
+  }).catch((err: unknown) => {
+    console.error("[startup] getCameras failed:", err instanceof Error ? err.message : err);
+  });
 
   // Reload camera details periodically to pick up setting changes
   setInterval(() => { void loadCameraDetails(); void loadChimeData(); }, 30_000);
@@ -402,6 +413,35 @@ export function startServer(
         json(res, { ok: false, errors }, 500);
       } else {
         json(res, { ok: true });
+      }
+      return;
+    }
+
+    if (url === "/api/debug/devices" && method === "GET") {
+      try {
+        const [cameras, chimes] = await Promise.all([
+          getCameras(client, session),
+          getChimeDevices(client, session),
+        ]);
+        const devices = [
+          ...cameras.map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+            model: c.model,
+            marketName: c.marketName,
+          })),
+          ...chimes.map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+            model: "",
+            marketName: "",
+          })),
+        ];
+        json(res, { devices });
+      } catch (err) {
+        json(res, { error: err instanceof Error ? err.message : String(err) }, 500);
       }
       return;
     }
