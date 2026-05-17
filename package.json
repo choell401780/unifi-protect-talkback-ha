@@ -1,0 +1,39 @@
+{
+  "name": "unifi-protect-talkback-ha",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "server": "SERVER=1 tsx src/index.ts",
+    "server:https": "SERVER=1 HTTPS=1 SSL_KEY=certs/key.pem SSL_CERT=certs/cert.pem tsx src/index.ts",
+    "generate:selfsigned-cert": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes -subj '/CN=localhost'",
+    "generate:aac-tone": "mkdir -p samples && ffmpeg -y -f lavfi -i 'sine=frequency=440:duration=5' -c:a aac -b:a 32k -ar 16000 -ac 1 -f adts samples/test-tone.aac",
+    "test:talkback:aac": "AUDIO_TEST_MODE=aac-file AUDIO_TEST_FILE=samples/test-tone-22050.aac tsx src/index.ts",
+    "generate:aac-tone-22050": "mkdir -p samples && ffmpeg -y -f lavfi -i 'sine=frequency=440:duration=5' -c:a aac -b:a 32k -ar 22050 -ac 1 -f adts samples/test-tone-22050.aac",
+    "generate:aac-tone-22050-64k": "mkdir -p samples && ffmpeg -y -f lavfi -i 'sine=frequency=440:duration=5' -c:a aac -b:a 64k -ar 22050 -ac 1 -f adts samples/test-tone-22050-64k.aac",
+    "test:talkback:aac-64k": "AUDIO_TEST_MODE=aac-file AUDIO_TEST_FILE=samples/test-tone-22050-64k.aac tsx src/index.ts",
+    "test:talkback:aac-64k-stream": "AUDIO_SEND_MODE=stream AUDIO_TEST_MODE=aac-file AUDIO_TEST_FILE=samples/test-tone-22050-64k.aac tsx src/index.ts",
+    "test:talkback:udp-aac": "AUDIO_TEST_MODE=udp-aac AUDIO_TEST_FILE=samples/test-tone-22050.aac tsx src/index.ts",
+    "test:talkback:rtp-opus": "AUDIO_TEST_MODE=rtp-opus tsx src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "axios": "^1.16.0",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/ws": "^8.18.1"
+  }
+}

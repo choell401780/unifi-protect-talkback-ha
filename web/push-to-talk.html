@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Doorbell PTT</title>
+  <style>
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #1a1a1a; color: #fff; }
+    #btn { width: 180px; height: 180px; border-radius: 50%; font-size: 1.1rem; font-weight: bold; cursor: pointer; background: #2e7d32; color: #fff; border: 4px solid #4caf50; user-select: none; touch-action: none; transition: background 0.15s; }
+    #btn.recording { background: #c62828; border-color: #ef5350; }
+    #btn.error     { background: #555; border-color: #ef9a9a; }
+    #btn:disabled  { background: #444; border-color: #666; cursor: not-allowed; }
+    #status { margin-top: 1.5rem; color: #aaa; font-size: 0.9rem; min-height: 1.2em; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2 style="margin-bottom:2rem">🔔 Doorbell Talk</h2>
+  <button id="btn">Hold to Talk</button>
+  <div id="status">Ready</div>
+
+  <script>
+    const btn = document.getElementById('btn');
+    const status = document.getElementById('status');
+    const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/audio`;
+
+    // States: idle | connecting | recording | stopping | error
+    let state = 'idle';
+    let ws = null, recorder = null, stream = null;
+    let timer = null, recordStart = 0;
+    let config = { timesliceMs: 500 };
+
+    fetch('/config.json').then(r => r.json()).then(c => { config = c; }).catch(() => {});
+
+    // Secure context check — microphone requires HTTPS or localhost
+    if (!window.isSecureContext || !navigator.mediaDevices) {
+      btn.disabled = true;
+      btn.classList.add('error');
+      status.textContent = 'Mikrofon erfordert HTTPS oder localhost.';
+    }
+
+    function fmtSec(ms) {
+      const s = Math.floor(ms / 1000);
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }
+
+    function setState(s, msg) {
+      state = s;
+      btn.classList.toggle('recording', s === 'recording');
+      btn.classList.toggle('error', s === 'error');
+      btn.disabled = s === 'connecting' || s === 'stopping';
+      const labels = { idle: 'Hold to Talk', connecting: 'Connecting…', recording: 'Talking', stopping: 'Stopping…', error: 'Error' };
+      btn.textContent = labels[s] ?? s;
+      if (msg) status.textContent = msg;
+      if (s === 'recording') {
+        recordStart = Date.now();
+        timer = setInterval(() => { status.textContent = `Recording ${fmtSec(Date.now() - recordStart)}`; }, 500);
+      } else {
+        clearInterval(timer); timer = null;
+      }
+    }
+
+    function releaseStream() {
+      stream?.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+
+    async function startTalk() {
+      if (state !== 'idle') return;
+      setState('connecting', 'Requesting mic…');
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: {
+          echoCancellation: true, noiseSuppression: true, autoGainControl: true
+        }});
+      } catch (err) {
+        releaseStream();
+        setState('error', 'Mic error: ' + err.message);
+        setTimeout(() => setState('idle', 'Ready'), 3000);
+        return;
+      }
+
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+                   : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')  ? 'audio/ogg;codecs=opus'
+                   : 'audio/webm';
+        ws.send(JSON.stringify({ type: 'init', mimeType: mime }));
+
+        recorder = new MediaRecorder(stream, { mimeType: mime });
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0 && ws?.readyState === WebSocket.OPEN) ws.send(e.data);
+        };
+        recorder.onstop = () => {
+          releaseStream();
+          recorder = null;
+          // wait for final chunk to flush, then close WS
+          setTimeout(() => { ws?.close(); ws = null; }, 150);
+          // Button re-enabled only in ws.onclose below
+          setState('stopping', 'Stopping…');
+        };
+        recorder.start(config.timesliceMs);
+        setState('recording', `Mic active · ${mime.replace('audio/', '')}`);
+      };
+
+      ws.onerror = () => {
+        releaseStream();
+        setState('error', 'WebSocket error');
+        setTimeout(() => setState('idle', 'Ready'), 3000);
+      };
+
+      ws.onclose = (e) => {
+        ws = null;
+        if (e.code === 1008) { setState('error', 'Server busy — try again'); setTimeout(() => setState('idle', 'Ready'), 3000); }
+        else setState('idle', 'Ready');
+      };
+    }
+
+    function doStop() {
+      if (state !== 'recording') return;
+      if (!recorder || recorder.state === 'inactive') {
+        releaseStream();
+        ws?.close(); ws = null;
+        setState('idle', 'Ready');
+        return;
+      }
+      recorder.stop(); // triggers onstop after final dataavailable
+    }
+
+    btn.addEventListener('mousedown',  () => startTalk());
+    btn.addEventListener('mouseup',    () => doStop());
+    btn.addEventListener('mouseleave', () => doStop());
+    btn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalk(); });
+    btn.addEventListener('touchend',   (e) => { e.preventDefault(); doStop(); });
+  </script>
+</body>
+</html>
