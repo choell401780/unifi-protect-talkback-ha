@@ -536,7 +536,9 @@
 <script>
 'use strict';
 
-const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/audio`;
+// Ingress-kompatibel: Pfad aus location.pathname ableiten
+const _pathBase = location.pathname.replace(/\/$/, '');
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${_pathBase}/audio`;
 let cfg = { timesliceMs: 500 };
 let speakerTimer = null, micTimer = null;
 let hlsInstance = null;
@@ -559,7 +561,7 @@ function log(msg, type = 'info') {
 
 // ── Init ─────────────────────────────────────────────────
 async function init() {
-  try { cfg = await fetch('/config.json').then(r => r.json()); } catch {}
+  try { cfg = await fetch('./config.json').then(r => r.json()); } catch {}
   const ready = await checkDeviceState();
   if (!ready) return;
   await loadStatus();
@@ -572,7 +574,7 @@ async function init() {
 // ── Device discovery ──────────────────────────────────────
 async function checkDeviceState() {
   try {
-    const d = await fetch('/api/devices').then(r => r.json());
+    const d = await fetch('./api/devices').then(r => r.json());
     if (d.activeCameraId) return true;
     showDiscoveryScreen(d);
     return false;
@@ -626,7 +628,7 @@ async function selectDevice(id) {
   const content = document.getElementById('discovery-content');
   content.innerHTML += '<p class="discovery-note" style="margin-top:0.75rem">Verbinde…</p>';
   try {
-    const r = await fetch('/api/devices/select', {
+    const r = await fetch('./api/devices/select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -654,7 +656,7 @@ async function selectDevice(id) {
 async function loadStatus() {
   const badge = document.getElementById('nvr-badge');
   try {
-    const s = await fetch('/api/status').then(r => r.json());
+    const s = await fetch('./api/status').then(r => r.json());
     if (s.nvr.connected) {
       badge.textContent = s.camera?.name ?? 'Verbunden';
       badge.className = 'badge ok';
@@ -705,7 +707,7 @@ function startStream() {
       backBufferLength: 4,
     });
 
-    hlsInstance.loadSource('/hls/stream.m3u8');
+    hlsInstance.loadSource('./hls/stream.m3u8');
     hlsInstance.attachMedia(video);
 
     hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -729,7 +731,7 @@ function startStream() {
     });
 
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = '/hls/stream.m3u8';
+    video.src = './hls/stream.m3u8';
     video.addEventListener('loadeddata', () => { hideOverlay(); log('Stream bereit (Safari HLS)', 'ok'); }, { once: true });
     video.addEventListener('error', () => { showOverlay('Stream nicht verfügbar'); log('Stream-Fehler', 'err'); }, { once: true });
   } else {
@@ -749,7 +751,7 @@ document.getElementById('mute-btn').addEventListener('click', () => {
 // ── Settings ─────────────────────────────────────────────
 async function loadSettings() {
   try {
-    const s = await fetch('/api/settings').then(r => r.json());
+    const s = await fetch('./api/settings').then(r => r.json());
     if (s.error) throw new Error(s.error);
     renderVolume(s);
     renderMessages(s);
@@ -811,7 +813,7 @@ function sliderRow(id, label, val, valId, min = 0, max = 100, step = 1) {
 
 async function saveSetting(data) {
   try {
-    const r = await fetch('/api/settings', {
+    const r = await fetch('./api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -865,7 +867,7 @@ function renderMessages(s) {
 
 async function sendMessage(msg) {
   try {
-    const r = await fetch('/api/display-message', {
+    const r = await fetch('./api/display-message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg }),
@@ -897,7 +899,7 @@ function previewRingtone(selectId, btn) {
     currentPreviewBtn = null;
   }
 
-  const audio = new Audio(`/api/ringtone-audio/${id}`);
+  const audio = new Audio(`./api/ringtone-audio/${id}`);
   audio.volume = 0.8;
   currentPreview = audio;
   currentPreviewBtn = btn;
@@ -930,7 +932,7 @@ function previewRingtone(selectId, btn) {
 async function loadChimeSettings() {
   const c = document.getElementById('chime-content');
   try {
-    const s = await fetch('/api/chime-settings').then(r => r.json());
+    const s = await fetch('./api/chime-settings').then(r => r.json());
     if (s.error) throw new Error(s.error);
     renderChimeSettings(s, c);
     log('Klingelton-Einstellungen geladen', 'ok');
@@ -1053,7 +1055,7 @@ function renderChimeSettings(s, container) {
             ringtoneId: document.getElementById('db-ringtone')?.value ?? '',
           }
         };
-        const r = await fetch('/api/chime-settings', {
+        const r = await fetch('./api/chime-settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -1093,7 +1095,7 @@ function renderChimeSettings(s, container) {
             ringtoneId: document.getElementById(`ch-ringtone-${ch.id}`)?.value ?? '',
           }
         };
-        const r = await fetch('/api/chime-settings', {
+        const r = await fetch('./api/chime-settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

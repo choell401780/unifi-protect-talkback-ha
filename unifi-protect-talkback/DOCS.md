@@ -64,7 +64,12 @@ Ein dedizierter lokaler Benutzer (kein Ubiquiti-Cloud-Konto) wird empfohlen.
 
 ## Weboberfläche öffnen
 
-Nach dem Start ist die Weboberfläche erreichbar unter:
+### Über Home Assistant Sidebar (Ingress — empfohlen)
+
+Nach dem Start erscheint **Türklingel** automatisch in der HA-Seitenleiste.
+Kein `panel_iframe`, keine externe URL nötig.
+
+### Direkt (Standalone)
 
 ```
 http://<Home-Assistant-IP>:<web_port>
@@ -72,11 +77,13 @@ http://<Home-Assistant-IP>:<web_port>
 
 Standardmäßig: `http://<HA-IP>:8080`
 
-Bei aktiviertem SSL:
+Bei aktiviertem SSL: `https://<HA-IP>:<web_port>`
 
-```
-https://<Home-Assistant-IP>:<web_port>
-```
+### Bekannte Einschränkungen bei Ingress
+
+- **Talkback / Mikrofon**: erfordert HTTPS. HA Ingress läuft über HTTPS, daher funktioniert Talkback automatisch über die Sidebar.
+- **Livebild (HLS)**: HLS.js wird vom CDN geladen (`cdn.jsdelivr.net`). Falls HA-Instanz keinen Internetzugang hat, schlägt das Laden fehl.
+- **WebSocket**: wird durch HA Ingress korrekt proxiert.
 
 ## Funktionsumfang
 

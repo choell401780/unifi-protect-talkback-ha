@@ -5,11 +5,16 @@ description: >-
   Verbindung mit der UniFi Protect Console (UDM Pro, CloudKey, UNVR) —
   die Türklingel wird automatisch erkannt.
   Livebild (HLS), Talkback, Klingelton-Steuerung, Display-Nachrichten.
-version: "1.2.1"
+version: "1.3.0"
 slug: "unifi_protect_doorbell"
 init: false
 startup: "application"
 boot: "auto"
+ingress: true
+ingress_port: 8080
+ingress_stream: true
+panel_icon: "mdi:doorbell-video"
+panel_title: "Türklingel"
 arch:
   - aarch64
   - amd64

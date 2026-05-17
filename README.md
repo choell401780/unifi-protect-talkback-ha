@@ -140,6 +140,7 @@ Siehe `docs/ARCHITECTURE.md`.
 ## Home Assistant Add-on
 
 Dieses Repository kann direkt als Home Assistant Add-on-Repository verwendet werden.
+Das Add-on unterstützt **Ingress** — die Oberfläche erscheint direkt in der HA-Seitenleiste, kein `panel_iframe` nötig.
 
 ### Repository hinzufügen
 

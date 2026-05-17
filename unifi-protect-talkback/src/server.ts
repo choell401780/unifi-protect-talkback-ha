@@ -293,8 +293,10 @@ export function startServer(
       return;
     }
 
-    // HTML pages — frame-ancestors * allows embedding in HA panel_iframe / dashboard
+    // HTML pages — frame-ancestors * allows embedding in HA panel_iframe / Ingress
     if (method === "GET" && (url === "/" || url === "/index.html" || url === "/push-to-talk.html")) {
+      const ingressPath = (req.headers["x-ingress-path"] as string | undefined) ?? "";
+      if (ingressPath) console.log(`[server] Ingress mode — base path: ${ingressPath}`);
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Security-Policy": "frame-ancestors *",
@@ -304,9 +306,10 @@ export function startServer(
     }
 
     if (method === "GET" && url === "/config.json") {
+      const ingressPath = (req.headers["x-ingress-path"] as string | undefined) ?? "";
       setCorsHeaders(res);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ timesliceMs }));
+      res.end(JSON.stringify({ timesliceMs, ingressPath }));
       return;
     }
 
