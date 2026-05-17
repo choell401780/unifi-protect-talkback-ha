@@ -1,9 +1,16 @@
+# Local dev (root)
 node_modules/
 .env
 dist/
 .DS_Store
 *.log
 coverage/
+
+# Add-on subfolder dev artifacts
+unifi-protect-talkback/node_modules/
+unifi-protect-talkback/.env
+unifi-protect-talkback/dist/
+unifi-protect-talkback/certs/
 
 # Home Assistant Add-on runtime data
 /data/
