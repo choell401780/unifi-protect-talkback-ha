@@ -32,12 +32,26 @@ if bashio::config.true 'ssl_verify'; then
     SSL_VERIFY=1
 fi
 
+# ── HLS Low-Latency Optionen (opt-in) ─────────────────────────────────────────
+HLS_REENCODE=0
+if bashio::config.true 'hls_reencode'; then
+    HLS_REENCODE=1
+fi
+HLS_VIDEO_BITRATE="$(bashio::config 'hls_video_bitrate' '2M')"
+HLS_PRESET="$(bashio::config 'hls_preset' 'veryfast')"
+HLS_HWACCEL="$(bashio::config 'hls_hwaccel' 'none')"
+
 # ── Info-Ausgabe (kein Passwort!) ─────────────────────────────────────────────
 bashio::log.info "NVR:            ${PROTECT_HOST}:${PROTECT_PORT}"
 bashio::log.info "Benutzer:       ${PROTECT_USERNAME}"
 bashio::log.info "Webport:        ${SERVER_PORT}"
 bashio::log.info "Log-Level:      ${LOG_LEVEL}"
 bashio::log.info "SSL-Verify NVR: ${SSL_VERIFY}"
+if [ "${HLS_REENCODE}" = "1" ]; then
+    bashio::log.info "HLS Re-Encode:  ON (preset=${HLS_PRESET}, bitrate=${HLS_VIDEO_BITRATE}, hwaccel=${HLS_HWACCEL})"
+else
+    bashio::log.info "HLS Re-Encode:  OFF (copy mode, depends on camera GOP)"
+fi
 
 if ! bashio::var.is_empty "${PROTECT_CAMERA_ID}"; then
     bashio::log.info "Kamera-ID (manuell): ${PROTECT_CAMERA_ID}"
@@ -60,6 +74,10 @@ export DOORBELL_MAC
 export SSL_VERIFY
 export SERVER_PORT
 export LOG_LEVEL
+export HLS_REENCODE
+export HLS_VIDEO_BITRATE
+export HLS_PRESET
+export HLS_HWACCEL
 export SERVER=1
 
 # ── SSL für Weboberfläche ─────────────────────────────────────────────────────

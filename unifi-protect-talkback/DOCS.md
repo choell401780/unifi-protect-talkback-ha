@@ -30,6 +30,10 @@
 | `certfile` | Zertifikatsdatei aus `/ssl/` (z. B. `fullchain.pem`) | |
 | `keyfile` | Schlüsseldatei aus `/ssl/` (z. B. `privkey.pem`) | |
 | `log_level` | Protokollierungsstufe: `debug`, `info`, `warning`, `error` | |
+| `hls_reencode` | Video re-encoden für niedrige Live-Latenz (Default: `false`) | |
+| `hls_video_bitrate` | Ziel-Bitrate beim Re-Encode (Default: `2M`) | |
+| `hls_preset` | x264-Preset: `ultrafast`/`superfast`/`veryfast`/`faster`/`fast`/`medium` (Default: `veryfast`) | |
+| `hls_hwaccel` | Hardware-Beschleunigung: `none`/`vaapi`/`qsv`/`nvenc` (Default: `none`) | |
 
 ### Türklingel-Erkennung (Auto-Discovery)
 
@@ -88,11 +92,53 @@ Bei aktiviertem SSL: `https://<HA-IP>:<web_port>`
 ## Funktionsumfang
 
 - **Auto-Discovery**: Türklingel wird automatisch erkannt, keine manuelle ID nötig
-- **Livebild**: RTSP-Stream der Türklingel (HLS, ~3 s Verzögerung)
+- **Livebild**: RTSP-Stream der Türklingel (HLS, ~10 s Verzögerung — siehe [Re-Encoding](#live-latenz-optimieren-re-encoding) für ~2–3 s)
 - **Talkback**: Sprechen über den Lautsprecher der Türklingel (WebSocket)
 - **Display-Nachrichten**: Text auf dem LCD-Display der Türklingel anzeigen
 - **Klingelton-Steuerung**: Klingelton und Lautstärke der Türklingel sowie eines angeschlossenen PoE-Chimes einstellen
 - **Lautstärke**: Lautsprecher- und Mikrofonlautstärke der Kamera anpassen
+
+## Live-Latenz optimieren (Re-Encoding)
+
+UniFi G4/G5 Doorbells senden Keyframes typischerweise nur alle ~5 Sekunden.
+Der Standard-Pfad **(`hls_reencode: false`)** kopiert das Video unverändert und
+ist damit auf jeder Hardware stabil — die Live-Latenz liegt jedoch bei ~10–12 s.
+
+Mit aktiviertem Re-Encoding **(`hls_reencode: true`)** transkodiert ffmpeg den
+Videostream und erzwingt ein 1-Sekunden-Keyframe-Intervall. Damit sinkt die
+Latenz auf **~2–3 Sekunden**.
+
+### Trade-off
+
+| Modus | Latenz | CPU | Empfohlen für |
+|---|---|---|---|
+| `hls_reencode: false` (Default) | ~10–12 s | minimal | RPi 3/4, schwache NAS, alles |
+| `hls_reencode: true` (Software) | ~2–3 s | hoch (≈1 Kern @ 1600×1200) | RPi 5, Intel NUC, x86-Server |
+| `hls_reencode: true` + `hls_hwaccel` | ~2–3 s | gering | Hosts mit GPU/iGPU |
+
+### Empfohlene Hardware (Software-Encoding)
+
+- **RPi 5** — funktioniert mit `hls_preset: superfast` oder `ultrafast`
+- **Intel NUC / N100 / N305** — `hls_preset: veryfast` problemlos
+- **x86-Server (≥4 Kerne)** — beliebig
+- **RPi 3 / RPi 4** — nicht empfohlen, stattdessen `hls_reencode: false` lassen
+
+### Hardware-Beschleunigung (experimentell)
+
+Die Optionen `vaapi`, `qsv`, `nvenc` sind im Code vorbereitet, erfordern aber:
+- passende GPU/iGPU im Host
+- `/dev/dri`-Mount im Add-on (VAAPI/QSV) bzw. NVIDIA-Container-Runtime (NVENC)
+- ggf. zusätzliche ffmpeg-Builds im Container
+
+Empfehlung: Software-Pfad nutzen, bis HW-Pfade auf der eigenen Hardware getestet
+sind. Bei Problemen einfach `hls_hwaccel: none` zurücksetzen.
+
+### Stabilitätshinweis
+
+Bei dauerhaftem Buffering nach Aktivierung:
+- Bitrate senken: `hls_video_bitrate: "1M"`
+- Preset wechseln: `hls_preset: "superfast"` oder `ultrafast`
+- Notfalls: `hls_reencode: false` (alter, stabiler Pfad)
 
 ## Troubleshooting
 

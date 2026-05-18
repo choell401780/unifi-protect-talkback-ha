@@ -703,8 +703,15 @@ function startStream() {
     hlsInstance = new Hls({
       debug: false,
       enableWorker: true,
-      maxBufferLength: 8,
-      backBufferLength: 4,
+      lowLatencyMode: true,
+      // Live-Sync: 2 Segmente hinter dem Live-Edge (statt 3 default)
+      liveSyncDurationCount: 2,
+      // Max-Drift bevor zur Edge gesprungen wird (statt 10 default)
+      liveMaxLatencyDurationCount: 5,
+      // Forward-Buffer reduziert (statt 8s) — stabil bei ~1s Segmenten
+      maxBufferLength: 6,
+      // Rückwärts-Buffer minimal (statt 4s) — spart Speicher auf Tablets
+      backBufferLength: 2,
     });
 
     hlsInstance.loadSource('./hls/stream.m3u8');
@@ -715,8 +722,19 @@ function startStream() {
       hlsRetryCount = 0;
       const lvl = hlsInstance.levels[hlsInstance.currentLevel];
       label.textContent = lvl ? `${lvl.width}×${lvl.height}` : 'Live';
-      log('Stream bereit', 'ok');
+      log('Stream bereit (low-latency)', 'ok');
       video.play().catch(() => {});
+    });
+
+    // Periodische Latenz-Anzeige (gedrosselt: nur bei >0.5s Abweichung)
+    let lastReportedLatency = null;
+    hlsInstance.on(Hls.Events.FRAG_BUFFERED, () => {
+      const lat = hlsInstance.latency;
+      if (typeof lat !== 'number' || !isFinite(lat)) return;
+      if (lastReportedLatency === null || Math.abs(lat - lastReportedLatency) > 0.5) {
+        lastReportedLatency = lat;
+        log(`Live-Latenz ~${lat.toFixed(1)}s`);
+      }
     });
 
     hlsInstance.on(Hls.Events.ERROR, (_, data) => {

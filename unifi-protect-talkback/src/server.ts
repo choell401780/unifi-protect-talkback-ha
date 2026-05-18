@@ -65,10 +65,109 @@ function json(res: http.ServerResponse, data: unknown, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
+// Low-latency HLS knobs — overridable via env for differing camera GOP / hardware.
+// Defaults chosen conservatively: stable on G4/G5 doorbells while still cutting
+// several seconds off vs. ffmpeg defaults.
+const HLS_TIME = process.env["HLS_TIME"] ?? "1";              // target segment duration (s)
+const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? "3";    // playlist window (segments)
+const HLS_ANALYZEDURATION = process.env["HLS_ANALYZEDURATION"] ?? "1000000"; // 1s
+const HLS_PROBESIZE = process.env["HLS_PROBESIZE"] ?? "500000";              // 500KB
+const HLS_RTSP_TRANSPORT = process.env["HLS_RTSP_TRANSPORT"] ?? "tcp";       // tcp = stable
+
+// Opt-in video re-encode for cameras with long GOP (e.g. G4 Doorbell @ 5s GOP).
+// When enabled, ffmpeg forces 1s keyframes → playable segments at the configured
+// hls_time. Costs CPU; default off to stay stable on weak hardware.
+const HLS_REENCODE = process.env["HLS_REENCODE"] === "1";
+const HLS_VIDEO_BITRATE = process.env["HLS_VIDEO_BITRATE"] ?? "2M";
+const HLS_PRESET = process.env["HLS_PRESET"] ?? "veryfast";   // x264 preset
+// Hardware acceleration scaffolding — "none" = software libx264 (default, stable).
+// Other values prepare ffmpeg pipelines but are NOT validated on every host;
+// users opt-in explicitly when their container has the necessary devices.
+const HLS_HWACCEL = (process.env["HLS_HWACCEL"] ?? "none").toLowerCase();
+type HwAccel = "none" | "vaapi" | "qsv" | "nvenc";
+const VALID_HWACCEL: ReadonlySet<HwAccel> = new Set(["none", "vaapi", "qsv", "nvenc"]);
+const hwaccel: HwAccel = VALID_HWACCEL.has(HLS_HWACCEL as HwAccel)
+  ? (HLS_HWACCEL as HwAccel)
+  : "none";
+
+// Encoder-args by hwaccel mode. Each block returns:
+//   inputFlags  — placed BEFORE `-i` (e.g. -hwaccel vaapi)
+//   videoArgs   — placed AFTER  `-i` (encoder + GOP control)
+// Software (libx264) is the only path validated in the default release;
+// hwaccel branches are prepared for users with capable hosts.
+function buildEncoderArgs(): { inputFlags: string[]; videoArgs: string[] } {
+  if (!HLS_REENCODE) {
+    return { inputFlags: [], videoArgs: ["-vcodec", "copy"] };
+  }
+  const forceKey = `expr:gte(t,n_forced*${HLS_TIME})`;
+
+  switch (hwaccel) {
+    case "vaapi":
+      return {
+        inputFlags: [
+          "-hwaccel", "vaapi",
+          "-hwaccel_device", "/dev/dri/renderD128",
+          "-hwaccel_output_format", "vaapi",
+        ],
+        videoArgs: [
+          "-vf", "format=nv12|vaapi,hwupload",
+          "-vcodec", "h264_vaapi",
+          "-profile:v", "constrained_baseline",
+          "-force_key_frames", forceKey,
+          "-b:v", HLS_VIDEO_BITRATE,
+          "-maxrate", HLS_VIDEO_BITRATE,
+        ],
+      };
+    case "qsv":
+      return {
+        inputFlags: ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"],
+        videoArgs: [
+          "-vcodec", "h264_qsv",
+          "-preset", HLS_PRESET,
+          "-profile:v", "baseline",
+          "-force_key_frames", forceKey,
+          "-b:v", HLS_VIDEO_BITRATE,
+          "-maxrate", HLS_VIDEO_BITRATE,
+        ],
+      };
+    case "nvenc":
+      return {
+        inputFlags: ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+        videoArgs: [
+          "-vcodec", "h264_nvenc",
+          "-preset", "p3",       // p1 (fastest) … p7 (slowest), p3 ≈ "fast"
+          "-tune", "ll",         // low-latency
+          "-profile:v", "baseline",
+          "-force_key_frames", forceKey,
+          "-b:v", HLS_VIDEO_BITRATE,
+          "-maxrate", HLS_VIDEO_BITRATE,
+        ],
+      };
+    case "none":
+    default:
+      return {
+        inputFlags: [],
+        videoArgs: [
+          "-vcodec", "libx264",
+          "-preset", HLS_PRESET,
+          "-tune", "zerolatency",
+          "-profile:v", "baseline",
+          "-pix_fmt", "yuv420p",
+          "-force_key_frames", forceKey,
+          "-sc_threshold", "0",
+          "-b:v", HLS_VIDEO_BITRATE,
+          "-maxrate", HLS_VIDEO_BITRATE,
+          "-bufsize", HLS_VIDEO_BITRATE,
+        ],
+      };
+  }
+}
+
 class HlsManager {
   private proc: ChildProcess | null = null;
   private _ready = false;
   private _error: string | null = null;
+  private _startedAt = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private rtspUrl: string, private hlsDir: string) {}
@@ -82,19 +181,44 @@ class HlsManager {
     const m3u8 = path.join(this.hlsDir, "stream.m3u8");
     const segPattern = path.join(this.hlsDir, "seg%03d.ts");
 
-    this.proc = spawn("ffmpeg", [
+    const { inputFlags, videoArgs } = buildEncoderArgs();
+
+    const args = [
       "-hide_banner", "-nostats",
-      "-rtsp_transport", "tcp",
+      // ── Input: low-latency demux ───────────────────────────────────────────
+      "-fflags", "nobuffer+flush_packets",
+      "-flags", "low_delay",
+      ...inputFlags,
+      "-rtsp_transport", HLS_RTSP_TRANSPORT,
+      "-analyzeduration", HLS_ANALYZEDURATION,
+      "-probesize", HLS_PROBESIZE,
       "-i", this.rtspUrl,
-      "-vcodec", "copy",
+      // ── Output: video (copy or re-encode), audio always AAC ────────────────
+      ...videoArgs,
       "-acodec", "aac", "-ar", "44100", "-ac", "2",
+      "-max_delay", "500000",
+      // ── HLS muxer ─────────────────────────────────────────────────────────
       "-f", "hls",
-      "-hls_time", "1",
-      "-hls_list_size", "4",
-      "-hls_flags", "delete_segments+temp_file",
+      "-hls_time", HLS_TIME,
+      "-hls_list_size", HLS_LIST_SIZE,
+      "-hls_flags", "delete_segments+temp_file+independent_segments",
       "-hls_segment_filename", segPattern,
       "-y", m3u8,
-    ]);
+    ];
+
+    // Redact RTSP credentials in log
+    const redacted = args.map((a) => a.replace(/rtsp:\/\/[^@]+@/, "rtsp://***@"));
+    console.log(`[hls] ffmpeg ${redacted.join(" ")}`);
+    const targetLatency = (parseFloat(HLS_TIME) * parseInt(HLS_LIST_SIZE, 10)).toFixed(1);
+    const encoderLabel = HLS_REENCODE
+      ? `re-encode (codec=${hwaccel === "none" ? "libx264" : `h264_${hwaccel}`}, preset=${HLS_PRESET}, bitrate=${HLS_VIDEO_BITRATE}, hwaccel=${hwaccel}, gop=${HLS_TIME}s)`
+      : "copy (no re-encode, GOP follows source)";
+    console.log(`[hls] mode: ${encoderLabel}`);
+    console.log(`[hls] segments: hls_time=${HLS_TIME}s list=${HLS_LIST_SIZE} → ~${targetLatency}s playlist window`);
+    console.log(`[hls] latency strategy: ${HLS_REENCODE ? "low (forced 1s GOP)" : "stable (copy, depends on camera GOP)"}`);
+
+    this._startedAt = Date.now();
+    this.proc = spawn("ffmpeg", args);
 
     this.proc.stderr?.on("data", (d: Buffer) => {
       const line = d.toString().trim();
@@ -103,6 +227,10 @@ class HlsManager {
         this._error = line;
       }
       if (line.includes("m3u8") && line.includes("Opening")) {
+        if (!this._ready) {
+          const startupMs = Date.now() - this._startedAt;
+          console.log(`[hls] first playlist ready after ${startupMs}ms`);
+        }
         this._ready = true;
         this._error = null;
       }
@@ -118,7 +246,7 @@ class HlsManager {
       }
     });
 
-    console.log("[hls] starting ffmpeg RTSP→HLS");
+    console.log(`[hls] starting ffmpeg RTSP→HLS (transport=${HLS_RTSP_TRANSPORT})`);
   }
 
   stop(): void {
