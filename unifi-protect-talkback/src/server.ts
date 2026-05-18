@@ -45,8 +45,16 @@ function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> 
   });
 }
 
+// Same-origin by default: API is consumed only by the bundled web UI
+// (served from the same server) or through Home Assistant Ingress.
+// Cross-origin access can be opted in via CORS_ALLOW_ORIGIN env var
+// (e.g. "http://homeassistant.local:8123" or "*" for legacy/dev setups).
+const CORS_ALLOW_ORIGIN = (process.env["CORS_ALLOW_ORIGIN"] ?? "").trim();
+
 function setCorsHeaders(res: http.ServerResponse): void {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  if (!CORS_ALLOW_ORIGIN) return;
+  res.setHeader("Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -293,13 +301,20 @@ export function startServer(
       return;
     }
 
-    // HTML pages — frame-ancestors * allows embedding in HA panel_iframe / Ingress
+    // HTML pages — allow embedding via Home Assistant Ingress, panel_iframe,
+    // Lovelace iframe cards and local dev (http/https). Exotic schemes
+    // (data:, javascript:, file:) are disallowed.
+    // Override via FRAME_ANCESTORS env var if a stricter / different policy
+    // is required (e.g. "'self' https://homeassistant.local:8123").
     if (method === "GET" && (url === "/" || url === "/index.html" || url === "/push-to-talk.html")) {
       const ingressPath = (req.headers["x-ingress-path"] as string | undefined) ?? "";
       if (ingressPath) console.log(`[server] Ingress mode — base path: ${ingressPath}`);
+      const frameAncestors = (process.env["FRAME_ANCESTORS"] ?? "'self' http: https:").trim();
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Security-Policy": "frame-ancestors *",
+        "Content-Security-Policy": `frame-ancestors ${frameAncestors}`,
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
       });
       res.end(fs.readFileSync(HTML_PATH));
       return;
@@ -320,11 +335,12 @@ export function startServer(
         res.writeHead(503, { "Retry-After": "3" }); res.end("Stream not ready");
         return;
       }
-      res.writeHead(200, {
+      const hlsHeaders: Record<string, string> = {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Cache-Control": "no-cache, no-store",
-        "Access-Control-Allow-Origin": "*",
-      });
+      };
+      if (CORS_ALLOW_ORIGIN) hlsHeaders["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN;
+      res.writeHead(200, hlsHeaders);
       res.end(fs.readFileSync(m3u8));
       return;
     }
@@ -334,11 +350,12 @@ export function startServer(
     if (method === "GET" && segMatch?.[1]) {
       const segFile = path.join(HLS_DIR, segMatch[1]);
       if (!fs.existsSync(segFile)) { res.writeHead(404); res.end(); return; }
-      res.writeHead(200, {
+      const segHeaders: Record<string, string> = {
         "Content-Type": "video/mp2t",
         "Cache-Control": "no-cache",
-        "Access-Control-Allow-Origin": "*",
-      });
+      };
+      if (CORS_ALLOW_ORIGIN) segHeaders["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN;
+      res.writeHead(200, segHeaders);
       fs.createReadStream(segFile).pipe(res);
       return;
     }
@@ -475,12 +492,13 @@ export function startServer(
         const raw = audioRes.data as ArrayBuffer | Buffer;
         const data = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
         const ct = (audioRes.headers["content-type"] as string | undefined) ?? "audio/mpeg";
-        res.writeHead(200, {
+        const audioHeaders: Record<string, string> = {
           "Content-Type": ct,
           "Content-Length": String(data.length),
           "Cache-Control": "public, max-age=3600",
-          "Access-Control-Allow-Origin": "*",
-        });
+        };
+        if (CORS_ALLOW_ORIGIN) audioHeaders["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN;
+        res.writeHead(200, audioHeaders);
         res.end(data);
       } catch (err) {
         console.error("[server] ringtone-audio proxy error:", err instanceof Error ? err.message : err);
@@ -577,6 +595,12 @@ export function startServer(
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     if (url === "/api/debug/devices" && method === "GET") {
+      // Debug endpoint — only enabled when LOG_LEVEL=debug to avoid leaking
+      // device IPs / MAC addresses through the public API surface.
+      if ((process.env["LOG_LEVEL"] ?? "").toLowerCase() !== "debug") {
+        res.writeHead(404); res.end();
+        return;
+      }
       try {
         // Use cached allCameras + chimes if available, otherwise fetch fresh
         const [cameras, chimes] = allCameras.length > 0

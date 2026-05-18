@@ -21,10 +21,13 @@ arch:
   - armhf
   - armv7
 
+# Direct port exposure is OFF by default — access goes through Home Assistant
+# Ingress (sidebar). Users can opt in by setting the host port in the
+# add-on's "Network" tab if they need direct LAN access (mind: no auth then).
 ports:
-  8080/tcp: 8080
+  8080/tcp: null
 ports_description:
-  8080/tcp: "Weboberfläche"
+  8080/tcp: "Optional: only set if direct LAN access is required (bypasses Home Assistant authentication)"
 
 map:
   - ssl:ro

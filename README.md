@@ -178,6 +178,22 @@ Talkback erfordert einen sicheren Kontext im Browser. Optionen:
 
 Die vollständige Add-on-Dokumentation (Konfigurationsfelder, Troubleshooting) findet sich in [`DOCS.md`](DOCS.md).
 
+## Sicherheits-Hinweise
+
+- **Standardmäßig wird nur Home Assistant Ingress verwendet** — der Zugriff geht durch HA-Authentifizierung. Eine Veröffentlichung des direkten Port `8080` über das Netzwerk (in der Add-on-„Netzwerk"-Lasche) **deaktiviert diese Authentifizierung**. Nur aktivieren, wenn der Server in einem vertrauenswürdigen LAN steht.
+- **Lokaler NVR-Account verwenden** (kein Ubiquiti-Cloud-/SSO-Konto). Empfohlen: dedizierter Benutzer mit minimalen Rechten (Kamera ansehen, Talkback, Kamera-Einstellungen).
+- **Selbst-signierte Zertifikate** werden gegenüber dem NVR per Default akzeptiert (`SSL_VERIFY=0`). Wenn der NVR ein vertrauenswürdiges Zertifikat besitzt, `SSL_VERIFY=1` setzen.
+- **HLS.js wird per CDN geladen** (`cdn.jsdelivr.net`). Installationen ohne Internetzugang können die Datei lokal in `web/` bundeln.
+- **CORS / Frame-Ancestors** sind standardmäßig auf same-origin + Ingress / panel_iframe begrenzt. Über die ENV-Variablen `CORS_ALLOW_ORIGIN` und `FRAME_ANCESTORS` können andere Origins erlaubt werden.
+
+Bei einer öffentlichen Veröffentlichung dieses Repos vorher prüfen, dass keine echten Credentials in `.env`, kein privater Schlüssel in `certs/` und kein Build-Artefakt in `dist/` mehr enthalten ist (siehe `.gitignore`).
+
+## Trademark / Disclaimer
+
+This project is an **independent**, community-built tool. It is **not affiliated with, endorsed by, sponsored by, or officially supported by Ubiquiti Inc.** "UniFi", "UniFi Protect" and related product names are trademarks of Ubiquiti Inc. All other trademarks are the property of their respective owners.
+
+This software is provided "AS IS" without warranty of any kind — see [`LICENSE`](LICENSE).
+
 ## Lizenz
 
-MIT
+Released under the [MIT License](LICENSE).

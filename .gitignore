@@ -1,17 +1,40 @@
-# Local dev (root)
-node_modules/
+# ── Secrets / Credentials ────────────────────────────────────────────────
 .env
-dist/
-.DS_Store
-*.log
-coverage/
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
 
-# Add-on subfolder dev artifacts
-unifi-protect-talkback/node_modules/
-unifi-protect-talkback/.env
-unifi-protect-talkback/dist/
+# ── Certificates (root + add-on subfolder) ───────────────────────────────
+certs/
 unifi-protect-talkback/certs/
 
-# Home Assistant Add-on runtime data
+# ── Node / Build artifacts ───────────────────────────────────────────────
+node_modules/
+unifi-protect-talkback/node_modules/
+dist/
+unifi-protect-talkback/dist/
+build/
+coverage/
+*.log
+logs/
+tmp/
+.cache/
+
+# ── OS / Editor noise ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Local tooling ────────────────────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+
+# ── Home Assistant Add-on runtime data ───────────────────────────────────
 /data/
 data/options.json

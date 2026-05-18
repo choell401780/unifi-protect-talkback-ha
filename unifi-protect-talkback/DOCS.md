@@ -121,3 +121,13 @@ Bei aktiviertem SSL: `https://<HA-IP>:<web_port>`
 **Verbindung zum NVR schlägt fehl**
 - Das Add-on akzeptiert selbstsignierte Zertifikate des NVR automatisch (`ssl_verify: false`).
 - Prüfe Benutzername und Passwort in der Konfiguration.
+
+## Sicherheits-Hinweise
+
+- Der **standardmäßige Zugriff erfolgt über Home Assistant Ingress** und ist damit durch die HA-Authentifizierung geschützt. Der direkte Port `8080` ist im Auslieferungszustand **nicht** im LAN exponiert.
+- Wer direkten LAN-Zugriff benötigt, kann in der Add-on-Konfiguration unter **Netzwerk** den Host-Port setzen. Achtung: in diesem Modus läuft das Add-on **ohne Authentifizierung** und sollte nur in einem vertrauenswürdigen Netzwerk betrieben werden.
+- Für die NVR-Verbindung wird ein **lokaler Benutzer** (kein Ubiquiti-Cloud-Konto) empfohlen.
+
+## Trademark / Disclaimer
+
+This add-on is an independent, community-built project. It is **not affiliated with, endorsed by, sponsored by, or officially supported by Ubiquiti Inc.** "UniFi" and "UniFi Protect" are trademarks of Ubiquiti Inc.
