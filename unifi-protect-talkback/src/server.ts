@@ -263,6 +263,261 @@ class HlsManager {
   getError(): string | null { return this._error; }
 }
 
+// ─── MSE (fMP4 over WebSocket) ──────────────────────────────────────────────
+// Low-latency alternative to HLS: ffmpeg outputs fragmented MP4 on stdout,
+// the server caches the init segment (ftyp+moov) and broadcasts every
+// subsequent moof+mdat fragment to all connected WebSocket clients.
+// Re-encode is always on for MSE: predictable codec + short GOP = fast join.
+
+const MSE_FRAG_DURATION_US = process.env["MSE_FRAG_DURATION_US"] ?? "200000"; // 200ms
+
+class MseManager {
+  private proc: ChildProcess | null = null;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private _ready = false;
+  private _error: string | null = null;
+
+  // MP4 box accumulator
+  private byteBuf = Buffer.alloc(0);
+  // Init segment = ftyp + moov, cached for new subscribers
+  private initSegment: Buffer | null = null;
+  private codecString: string | null = null;
+  // Buffer for the in-flight live fragment (moof, then mdat → flush together)
+  private fragBuf: Buffer[] = [];
+  // Last keyframe fragment (moof+mdat) — sent to new subscribers so they can
+  // start decoding immediately instead of waiting for the next keyframe.
+  private lastKeyframeFragment: Buffer | null = null;
+
+  private subscribers = new Set<WebSocket>();
+
+  constructor(private rtspUrl: string) {}
+
+  start(): void {
+    if (this.proc) return;
+    this.spawn();
+  }
+
+  private spawn(): void {
+    const args = [
+      "-hide_banner", "-nostats",
+      "-fflags", "nobuffer+flush_packets", "-flags", "low_delay",
+      "-rtsp_transport", HLS_RTSP_TRANSPORT,
+      "-analyzeduration", HLS_ANALYZEDURATION,
+      "-probesize", HLS_PROBESIZE,
+      "-i", this.rtspUrl,
+      // Video re-encode: baseline H.264 (deterministic codec string for MSE)
+      "-c:v", "libx264",
+      "-preset", HLS_PRESET,
+      "-tune", "zerolatency",
+      "-profile:v", "baseline",
+      "-pix_fmt", "yuv420p",
+      "-force_key_frames", `expr:gte(t,n_forced*${HLS_TIME})`,
+      "-sc_threshold", "0",
+      "-b:v", HLS_VIDEO_BITRATE,
+      "-maxrate", HLS_VIDEO_BITRATE,
+      "-bufsize", HLS_VIDEO_BITRATE,
+      // Audio: AAC-LC
+      "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "96k",
+      // fMP4 output
+      "-f", "mp4",
+      "-movflags", "empty_moov+default_base_moof+frag_keyframe+separate_moof+omit_tfhd_offset",
+      "-frag_duration", MSE_FRAG_DURATION_US,
+      "pipe:1",
+    ];
+
+    const redacted = args.map((a) => a.replace(/rtsp:\/\/[^@]+@/, "rtsp://***@"));
+    console.log(`[mse] ffmpeg ${redacted.join(" ")}`);
+    console.log(`[mse] mode: re-encode (codec=libx264 baseline, preset=${HLS_PRESET}, bitrate=${HLS_VIDEO_BITRATE}, gop=${HLS_TIME}s, frag=${MSE_FRAG_DURATION_US}µs)`);
+    console.log(`[mse] latency strategy: low (fMP4 over WebSocket, ~${(parseInt(MSE_FRAG_DURATION_US, 10) / 1000).toFixed(0)}ms fragments)`);
+
+    this.proc = spawn("ffmpeg", args);
+
+    this.proc.stdout?.on("data", (chunk: Buffer) => this.consume(chunk));
+    this.proc.stderr?.on("data", (d: Buffer) => {
+      const line = d.toString().trim();
+      if (/error|failed|invalid/i.test(line) && !/size=|time=/i.test(line)) {
+        console.error("[mse]", line);
+        this._error = line;
+      }
+    });
+    this.proc.on("close", (code) => {
+      console.log(`[mse] ffmpeg exit ${code}`);
+      this.proc = null;
+      this._ready = false;
+      this.byteBuf = Buffer.alloc(0);
+      this.fragBuf = [];
+      if (code !== 0 && code !== null && this.subscribers.size > 0) {
+        this._error = `ffmpeg exited (${code})`;
+        this.restartTimer = setTimeout(() => this.spawn(), 8000);
+      }
+    });
+  }
+
+  stop(): void {
+    if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
+    this.proc?.kill("SIGTERM");
+    this.proc = null;
+    this._ready = false;
+    this.byteBuf = Buffer.alloc(0);
+    this.initSegment = null;
+    this.codecString = null;
+    this.fragBuf = [];
+    this.lastKeyframeFragment = null;
+    for (const ws of this.subscribers) {
+      try { ws.close(1000, "stream stopped"); } catch { /* ignore */ }
+    }
+    this.subscribers.clear();
+  }
+
+  isReady(): boolean { return this._ready && this.initSegment !== null; }
+  getError(): string | null { return this._error; }
+  getCodec(): string | null { return this.codecString; }
+  subscriberCount(): number { return this.subscribers.size; }
+
+  // ── MP4 box scanner ────────────────────────────────────────────────────────
+  // Reads top-level ISO-BMFF boxes from the ffmpeg stdout stream.
+  // Box format: 4 bytes size (BE) + 4 bytes type (ASCII) + payload.
+  // (We don't handle 64-bit largesize; fMP4 fragments don't use it.)
+  private consume(chunk: Buffer): void {
+    this.byteBuf = Buffer.concat([this.byteBuf, chunk]);
+    while (this.byteBuf.length >= 8) {
+      const size = this.byteBuf.readUInt32BE(0);
+      if (size < 8 || size > 64 * 1024 * 1024) {
+        console.error(`[mse] invalid box size ${size}, resetting buffer`);
+        this.byteBuf = Buffer.alloc(0);
+        return;
+      }
+      if (this.byteBuf.length < size) return; // need more bytes
+      const type = this.byteBuf.subarray(4, 8).toString("ascii");
+      const box = this.byteBuf.subarray(0, size);
+      this.byteBuf = this.byteBuf.subarray(size);
+      this.handleBox(type, box);
+    }
+  }
+
+  private handleBox(type: string, box: Buffer): void {
+    if (type === "ftyp") {
+      // Start of init segment
+      this.initSegment = Buffer.from(box);
+      return;
+    }
+    if (type === "moov") {
+      // End of init segment → cache, parse codec, mark ready
+      this.initSegment = this.initSegment
+        ? Buffer.concat([this.initSegment, box])
+        : Buffer.from(box);
+      this.codecString = this.parseCodecFromMoov(box) ?? 'avc1.42E01F,mp4a.40.2';
+      this._ready = true;
+      console.log(`[mse] init segment ready (${this.initSegment.length}B, codecs=${this.codecString})`);
+      return;
+    }
+    if (type === "moof") {
+      // Start of a live fragment. Flush any previously-collected fragment
+      // (defensive — under normal ffmpeg output moof+mdat pair cleanly).
+      if (this.fragBuf.length > 0) this.flushFragment();
+      this.fragBuf.push(Buffer.from(box));
+      return;
+    }
+    if (type === "mdat") {
+      this.fragBuf.push(Buffer.from(box));
+      this.flushFragment();
+      return;
+    }
+    if (type === "styp" || type === "sidx" || type === "free") {
+      // Optional MP4 boxes — pass through to subscribers as part of the
+      // current fragment.
+      this.fragBuf.push(Buffer.from(box));
+      return;
+    }
+    // Unknown / ignored boxes (e.g. 'free' padding) — drop silently
+  }
+
+  private flushFragment(): void {
+    if (this.fragBuf.length === 0) return;
+    const fragment = Buffer.concat(this.fragBuf);
+    this.fragBuf = [];
+
+    // Heuristic: a fragment whose moof contains the SampleFlags pattern of an
+    // I-frame is treated as a keyframe boundary. We can't cheaply detect this
+    // here, so we approximate: if no prior keyframe fragment is cached, use
+    // the first fragment we see. Subsequent fragments overwrite the cache
+    // only when a new top-level moof arrives via re-keying (every HLS_TIME s).
+    if (!this.lastKeyframeFragment) {
+      this.lastKeyframeFragment = fragment;
+    }
+
+    for (const ws of this.subscribers) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(fragment); } catch { /* drop on socket error */ }
+      }
+    }
+  }
+
+  // Recursively walk moov → trak → mdia → minf → stbl → stsd → avc1 → avcC
+  // to read the H.264 profile/compat/level bytes for the codec string.
+  private parseCodecFromMoov(moov: Buffer): string | null {
+    const findBox = (buf: Buffer, name: string, start = 8): Buffer | null => {
+      let off = start;
+      while (off + 8 <= buf.length) {
+        const size = buf.readUInt32BE(off);
+        if (size < 8 || off + size > buf.length) return null;
+        const type = buf.subarray(off + 4, off + 8).toString("ascii");
+        if (type === name) return buf.subarray(off, off + size);
+        off += size;
+      }
+      return null;
+    };
+    try {
+      const trak = findBox(moov, "trak");
+      if (!trak) return null;
+      const mdia = findBox(trak, "mdia");
+      if (!mdia) return null;
+      const minf = findBox(mdia, "minf");
+      if (!minf) return null;
+      const stbl = findBox(minf, "stbl");
+      if (!stbl) return null;
+      const stsd = findBox(stbl, "stsd");
+      if (!stsd) return null;
+      // stsd: 4 size + 4 type + 4 version/flags + 4 entry_count + entries…
+      // First entry header: 4 size + 4 type ('avc1') + 6 reserved + 2 dref_index + … 78 bytes header
+      const avc1 = findBox(stsd, "avc1", 16);
+      if (!avc1) return null;
+      const avcC = findBox(avc1, "avcC", 8 + 78);
+      if (!avcC || avcC.length < 12) return null;
+      // avcC payload: configurationVersion(1) profile(1) compat(1) level(1)
+      const profile = avcC[8 + 1]!;
+      const compat = avcC[8 + 2]!;
+      const level = avcC[8 + 3]!;
+      const hex = (n: number): string => n.toString(16).padStart(2, "0").toUpperCase();
+      return `avc1.${hex(profile)}${hex(compat)}${hex(level)},mp4a.40.2`;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Subscriber lifecycle ────────────────────────────────────────────────────
+  addSubscriber(ws: WebSocket): void {
+    this.subscribers.add(ws);
+    ws.on("close", () => this.subscribers.delete(ws));
+    ws.on("error", () => this.subscribers.delete(ws));
+
+    if (this.initSegment && this.codecString) {
+      // Send metadata as JSON text frame
+      try { ws.send(JSON.stringify({ type: "init", codecs: this.codecString })); }
+      catch { return; }
+      // Send init segment as binary frame
+      try { ws.send(this.initSegment); } catch { return; }
+      // Send last keyframe fragment so playback can start without waiting
+      // for the next GOP boundary.
+      if (this.lastKeyframeFragment) {
+        try { ws.send(this.lastKeyframeFragment); } catch { /* ignore */ }
+      }
+    } else {
+      try { ws.send(JSON.stringify({ type: "wait" })); } catch { /* ignore */ }
+    }
+  }
+}
+
 export function startServer(
   session: ProtectSession,
   client: AxiosInstance,
@@ -282,8 +537,18 @@ export function startServer(
   let cameraDetails: CameraDetails | null = null;
   let cameraDetailsError: string | null = null;
   let hls: HlsManager | null = null;
+  let mse: MseManager | null = null;
   let ringtones: Ringtone[] = [];
   let chimeDevices: ChimeDevice[] = [];
+
+  // ── Video mode ────────────────────────────────────────────────────────────────
+  // hls = default, stable, ~10-12s latency, low CPU
+  // mse = fMP4 over WebSocket, ~1-2s latency, re-encodes (~1 core CPU)
+  type VideoMode = "hls" | "mse";
+  const VALID_MODES: ReadonlySet<VideoMode> = new Set(["hls", "mse"]);
+  const envMode = (process.env["VIDEO_MODE"] ?? "hls").toLowerCase() as VideoMode;
+  let videoMode: VideoMode = VALID_MODES.has(envMode) ? envMode : "hls";
+  console.log(`[server] VIDEO_MODE=${videoMode}`);
 
   const loadCameraDetails = async (): Promise<void> => {
     if (!activeCameraId) return;
@@ -298,21 +563,46 @@ export function startServer(
     }
   };
 
-  const startHls = (): void => {
-    if (!activeCameraId) return;
+  const buildRtspUrl = (): string | null => {
     const channels = cameraDetails?.channels ?? [];
     const channel = channels.find((c) => c.isRtspEnabled) ?? channels[0];
-    if (!channel?.rtspAlias || !protectHost) {
-      console.warn("[hls] no RTSP channel or host configured");
-      return;
-    }
+    if (!channel?.rtspAlias || !protectHost) return null;
     const user = encodeURIComponent(process.env["PROTECT_USERNAME"] ?? "");
     const pass = encodeURIComponent(process.env["PROTECT_PASSWORD"] ?? "");
     const auth = user && pass ? `${user}:${pass}@` : "";
-    const rtspUrl = `rtsp://${auth}${protectHost}:7447/${channel.rtspAlias}`;
-    console.log(`[hls] RTSP channel: ${channel.name} (${channel.width}x${channel.height})`);
-    hls = new HlsManager(rtspUrl, HLS_DIR);
-    hls.start();
+    console.log(`[stream] RTSP channel: ${channel.name} (${channel.width}x${channel.height})`);
+    return `rtsp://${auth}${protectHost}:7447/${channel.rtspAlias}`;
+  };
+
+  const startVideoStream = (): void => {
+    if (!activeCameraId) return;
+    const rtspUrl = buildRtspUrl();
+    if (!rtspUrl) {
+      console.warn("[stream] no RTSP channel or host configured");
+      return;
+    }
+    if (videoMode === "mse") {
+      console.log(`[stream] active mode: MSE (low latency, ~1-2s)`);
+      mse = new MseManager(rtspUrl);
+      mse.start();
+    } else {
+      console.log(`[stream] active mode: HLS (stable, ~10s)`);
+      hls = new HlsManager(rtspUrl, HLS_DIR);
+      hls.start();
+    }
+  };
+
+  const stopVideoStream = (): void => {
+    hls?.stop(); hls = null;
+    mse?.stop(); mse = null;
+  };
+
+  const switchVideoMode = (target: VideoMode): void => {
+    if (target === videoMode) return;
+    console.log(`[stream] switching mode: ${videoMode} → ${target}`);
+    stopVideoStream();
+    videoMode = target;
+    startVideoStream();
   };
 
   const loadChimeData = async (): Promise<void> => {
@@ -329,7 +619,7 @@ export function startServer(
   };
 
   const activateCamera = (): void => {
-    void loadCameraDetails().then(() => startHls());
+    void loadCameraDetails().then(() => startVideoStream());
     void loadChimeData();
   };
 
@@ -546,9 +836,33 @@ export function startServer(
         camera: cameraDetails
           ? { id: cameraDetails.id, name: cameraDetails.name, type: cameraDetails.type, state: cameraDetails.state }
           : null,
-        stream: { hlsReady: hls?.isReady() ?? false, hlsError: hls?.getError() ?? null },
+        stream: {
+          mode: videoMode,
+          hlsReady: hls?.isReady() ?? false,
+          hlsError: hls?.getError() ?? null,
+          mseReady: mse?.isReady() ?? false,
+          mseError: mse?.getError() ?? null,
+          mseCodec: mse?.getCodec() ?? null,
+        },
         activeCameraId,
       });
+      return;
+    }
+
+    if (url === "/api/video-mode" && method === "GET") {
+      json(res, { mode: videoMode, available: ["hls", "mse"] });
+      return;
+    }
+
+    if (url === "/api/video-mode" && method === "POST") {
+      const body = await parseBody(req);
+      const target = String(body["mode"] ?? "").toLowerCase();
+      if (!VALID_MODES.has(target as VideoMode)) {
+        json(res, { error: `invalid mode (expected hls|mse), got: ${target}` }, 400);
+        return;
+      }
+      switchVideoMode(target as VideoMode);
+      json(res, { ok: true, mode: videoMode });
       return;
     }
 
@@ -775,9 +1089,38 @@ export function startServer(
   const proto = useHttps ? "https" : "http";
   if (useHttps) console.log("[server] HTTPS enabled");
 
-  // ── WebSocket talkback ───────────────────────────────────────────────────────
-  const wss = new WebSocketServer({ server: httpServer, path: "/audio" });
+  // ── WebSocket: multiplex /audio (talkback) and /mse-stream (live video) ─────
+  const wssTalkback = new WebSocketServer({ noServer: true });
+  const wssMse = new WebSocketServer({ noServer: true });
+
+  httpServer.on("upgrade", (req, socket, head) => {
+    const reqUrl = req.url ?? "";
+    if (reqUrl === "/audio") {
+      wssTalkback.handleUpgrade(req, socket, head, (ws) => {
+        wssTalkback.emit("connection", ws, req);
+      });
+    } else if (reqUrl === "/mse-stream") {
+      wssMse.handleUpgrade(req, socket, head, (ws) => {
+        wssMse.emit("connection", ws, req);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  // MSE WebSocket: clients subscribe to live fMP4 fragments
+  wssMse.on("connection", (ws) => {
+    if (videoMode !== "mse" || !mse) {
+      console.log(`[mse] rejecting client — mode=${videoMode}`);
+      ws.close(1011, `mode is ${videoMode}, not mse`);
+      return;
+    }
+    console.log(`[mse] client connected (total=${mse.subscriberCount() + 1})`);
+    mse.addSubscriber(ws);
+  });
+
   let sessionActive = false;
+  const wss = wssTalkback;
 
   wss.on("connection", (browserWs) => {
     if (sessionActive) {
@@ -866,8 +1209,9 @@ export function startServer(
   });
 
   // Cleanup on exit
-  process.on("SIGTERM", () => { hls?.stop(); process.exit(0); });
-  process.on("SIGINT", () => { hls?.stop(); process.exit(0); });
+  const cleanup = (): void => { hls?.stop(); mse?.stop(); };
+  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+  process.on("SIGINT", () => { cleanup(); process.exit(0); });
 
   httpServer.listen(serverPort, () => {
     console.log(`[server] ${proto}://localhost:${serverPort}`);

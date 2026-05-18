@@ -32,7 +32,8 @@ if bashio::config.true 'ssl_verify'; then
     SSL_VERIFY=1
 fi
 
-# ── HLS Low-Latency Optionen (opt-in) ─────────────────────────────────────────
+# ── Video-Modus + Low-Latency Optionen ────────────────────────────────────────
+VIDEO_MODE="$(bashio::config 'video_mode' 'hls')"
 HLS_REENCODE=0
 if bashio::config.true 'hls_reencode'; then
     HLS_REENCODE=1
@@ -47,6 +48,7 @@ bashio::log.info "Benutzer:       ${PROTECT_USERNAME}"
 bashio::log.info "Webport:        ${SERVER_PORT}"
 bashio::log.info "Log-Level:      ${LOG_LEVEL}"
 bashio::log.info "SSL-Verify NVR: ${SSL_VERIFY}"
+bashio::log.info "Video-Modus:    ${VIDEO_MODE}"
 if [ "${HLS_REENCODE}" = "1" ]; then
     bashio::log.info "HLS Re-Encode:  ON (preset=${HLS_PRESET}, bitrate=${HLS_VIDEO_BITRATE}, hwaccel=${HLS_HWACCEL})"
 else
@@ -74,6 +76,7 @@ export DOORBELL_MAC
 export SSL_VERIFY
 export SERVER_PORT
 export LOG_LEVEL
+export VIDEO_MODE
 export HLS_REENCODE
 export HLS_VIDEO_BITRATE
 export HLS_PRESET

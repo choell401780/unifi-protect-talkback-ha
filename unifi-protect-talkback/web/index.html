@@ -132,6 +132,33 @@
 
     #stream-label { font-size: 0.75rem; color: var(--muted); }
 
+    .mode-tabs {
+      display: flex;
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .mode-tab {
+      flex: 1;
+      min-width: 100px;
+      padding: 0.4rem 0.6rem;
+      border: 1px solid #333;
+      background: #1a1a1a;
+      color: var(--muted);
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s;
+    }
+    .mode-tab:hover { border-color: var(--blue); }
+    .mode-tab.active {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue);
+    }
+    .mode-tab .tab-hint { display: block; font-size: 0.65rem; opacity: 0.7; margin-top: 0.1rem; }
+
     #mute-btn {
       background: none;
       border: 1px solid var(--border);
@@ -483,6 +510,10 @@
   <!-- Camera stream -->
   <div class="card" id="stream-card">
     <div class="card-title">Kamerabild · Live</div>
+    <div class="mode-tabs" id="mode-tabs">
+      <button class="mode-tab" data-mode="hls">HLS<span class="tab-hint">stabil ~10 s</span></button>
+      <button class="mode-tab" data-mode="mse">MSE<span class="tab-hint">low-latency ~1–2 s</span></button>
+    </div>
     <div class="video-wrap">
       <video id="video" autoplay muted playsinline></video>
       <div class="video-overlay" id="stream-overlay">
@@ -543,6 +574,8 @@ let cfg = { timesliceMs: 500 };
 let speakerTimer = null, micTimer = null;
 let hlsInstance = null;
 let hlsRetryCount = 0;
+let mseState = null;            // { ws, mediaSource, sourceBuffer, queue, retryCount }
+let activeMode = 'hls';         // 'hls' | 'mse'
 let currentPreview = null;
 let currentPreviewBtn = null;
 
@@ -567,6 +600,7 @@ async function init() {
   await loadStatus();
   await loadSettings();
   await loadChimeSettings();
+  await initStreamMode();
   startStream();
   setupTalkback();
 }
@@ -685,7 +719,23 @@ function hideOverlay() {
   document.getElementById('stream-overlay').classList.add('hidden');
 }
 
+function stopAllPlayers() {
+  const video = document.getElementById('video');
+  if (hlsInstance) { try { hlsInstance.destroy(); } catch {} hlsInstance = null; }
+  if (mseState) {
+    try { mseState.ws && mseState.ws.close(); } catch {}
+    try { mseState.mediaSource && mseState.mediaSource.readyState === 'open' && mseState.mediaSource.endOfStream(); } catch {}
+    mseState = null;
+  }
+  try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
+}
+
 function startStream() {
+  if (activeMode === 'mse') startMseStream();
+  else startHlsStream();
+}
+
+function startHlsStream() {
   const video = document.getElementById('video');
   const label = document.getElementById('stream-label');
 
@@ -695,7 +745,7 @@ function startStream() {
     return;
   }
 
-  showOverlay('Stream verbindet…', true);
+  showOverlay('Stream verbindet (HLS)…', true);
 
   if (Hls.isSupported()) {
     if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
@@ -704,13 +754,9 @@ function startStream() {
       debug: false,
       enableWorker: true,
       lowLatencyMode: true,
-      // Live-Sync: 2 Segmente hinter dem Live-Edge (statt 3 default)
       liveSyncDurationCount: 2,
-      // Max-Drift bevor zur Edge gesprungen wird (statt 10 default)
       liveMaxLatencyDurationCount: 5,
-      // Forward-Buffer reduziert (statt 8s) — stabil bei ~1s Segmenten
       maxBufferLength: 6,
-      // Rückwärts-Buffer minimal (statt 4s) — spart Speicher auf Tablets
       backBufferLength: 2,
     });
 
@@ -721,19 +767,18 @@ function startStream() {
       hideOverlay();
       hlsRetryCount = 0;
       const lvl = hlsInstance.levels[hlsInstance.currentLevel];
-      label.textContent = lvl ? `${lvl.width}×${lvl.height}` : 'Live';
-      log('Stream bereit (low-latency)', 'ok');
+      label.textContent = lvl ? `${lvl.width}×${lvl.height} · HLS` : 'Live · HLS';
+      log('Stream bereit (HLS, low-latency)', 'ok');
       video.play().catch(() => {});
     });
 
-    // Periodische Latenz-Anzeige (gedrosselt: nur bei >0.5s Abweichung)
     let lastReportedLatency = null;
     hlsInstance.on(Hls.Events.FRAG_BUFFERED, () => {
       const lat = hlsInstance.latency;
       if (typeof lat !== 'number' || !isFinite(lat)) return;
       if (lastReportedLatency === null || Math.abs(lat - lastReportedLatency) > 0.5) {
         lastReportedLatency = lat;
-        log(`Live-Latenz ~${lat.toFixed(1)}s`);
+        log(`Live-Latenz ~${lat.toFixed(1)}s (HLS)`);
       }
     });
 
@@ -742,10 +787,10 @@ function startStream() {
       label.textContent = '';
       hlsRetryCount++;
       const delay = Math.min(5000 * hlsRetryCount, 30000);
-      showOverlay(`Verbindungsfehler – Retry in ${delay/1000}s…`);
+      showOverlay(`HLS-Fehler – Retry in ${delay/1000}s…`);
       log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}`, 'err');
       hlsInstance.destroy(); hlsInstance = null;
-      setTimeout(() => startStream(), delay);
+      setTimeout(() => { if (activeMode === 'hls') startHlsStream(); }, delay);
     });
 
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -756,6 +801,151 @@ function startStream() {
     showOverlay('Browser unterstützt kein HLS');
     log('HLS wird von diesem Browser nicht unterstützt', 'err');
   }
+}
+
+// MSE (fMP4 over WebSocket) — low-latency video path.
+// Server sends: 1) JSON {type:"init",codecs:"…"} 2) init segment (binary)
+// 3) live fragments (binary, moof+mdat). MediaSource sequentially appends.
+function startMseStream() {
+  const video = document.getElementById('video');
+  const label = document.getElementById('stream-label');
+
+  if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported) {
+    log('MSE wird vom Browser nicht unterstützt – Fallback auf HLS', 'err');
+    setActiveMode('hls');
+    return;
+  }
+
+  showOverlay('Stream verbindet (MSE)…', true);
+
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${_pathBase}/mse-stream`;
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+  const ms = new MediaSource();
+  video.src = URL.createObjectURL(ms);
+
+  const state = { ws, mediaSource: ms, sourceBuffer: null, queue: [], retryCount: 0, codecs: null, gotInit: false };
+  mseState = state;
+
+  const flushQueue = () => {
+    const sb = state.sourceBuffer;
+    if (!sb || sb.updating || state.queue.length === 0) return;
+    try { sb.appendBuffer(state.queue.shift()); }
+    catch (e) {
+      log(`MSE appendBuffer-Fehler: ${e.message}`, 'err');
+    }
+  };
+
+  ms.addEventListener('sourceopen', () => {
+    log('MSE MediaSource open – warte auf Codec-Info');
+  });
+
+  ws.addEventListener('open', () => {
+    log('MSE WebSocket verbunden');
+  });
+
+  ws.addEventListener('message', (ev) => {
+    if (typeof ev.data === 'string') {
+      // Control message (JSON)
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'init' && msg.codecs) {
+        state.codecs = msg.codecs;
+        const mime = `video/mp4; codecs="${msg.codecs}"`;
+        if (!MediaSource.isTypeSupported(mime)) {
+          log(`MSE Codec nicht unterstützt: ${mime} – Fallback HLS`, 'err');
+          setActiveMode('hls');
+          return;
+        }
+        const attach = () => {
+          try {
+            const sb = ms.addSourceBuffer(mime);
+            sb.mode = 'segments';
+            sb.addEventListener('updateend', flushQueue);
+            sb.addEventListener('error', (e) => log(`MSE SourceBuffer-Fehler`, 'err'));
+            state.sourceBuffer = sb;
+            state.gotInit = true;
+            log(`MSE bereit (Codecs: ${msg.codecs})`, 'ok');
+            label.textContent = `Live · MSE`;
+            hideOverlay();
+            video.play().catch(() => {});
+            flushQueue();
+          } catch (e) {
+            log(`MSE addSourceBuffer-Fehler: ${e.message}`, 'err');
+            setActiveMode('hls');
+          }
+        };
+        if (ms.readyState === 'open') attach();
+        else ms.addEventListener('sourceopen', attach, { once: true });
+      } else if (msg.type === 'wait') {
+        log('MSE: warte auf Stream-Init…');
+      }
+    } else {
+      // Binary fragment
+      state.queue.push(new Uint8Array(ev.data));
+      // Cap queue (prevent memory blowup if SourceBuffer stalls)
+      if (state.queue.length > 200) state.queue.shift();
+      flushQueue();
+    }
+  });
+
+  ws.addEventListener('close', (ev) => {
+    if (activeMode !== 'mse') return;
+    state.retryCount++;
+    const delay = Math.min(2000 * state.retryCount, 20000);
+    log(`MSE WS geschlossen (${ev.code}) – Retry in ${delay/1000}s`, 'err');
+    showOverlay(`MSE getrennt – Retry in ${delay/1000}s…`, true);
+    setTimeout(() => { if (activeMode === 'mse') startMseStream(); }, delay);
+  });
+  ws.addEventListener('error', () => {
+    log('MSE WS-Fehler', 'err');
+  });
+}
+
+// ── Mode switching ───────────────────────────────────────
+async function setActiveMode(mode) {
+  if (mode === activeMode) return;
+  log(`Wechsle Stream-Modus: ${activeMode} → ${mode}`);
+  // Tell server first so it (re)starts the right pipeline
+  try {
+    const res = await fetch('./api/video-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      log(`Mode-Wechsel abgelehnt: ${data.error || res.status}`, 'err');
+      return;
+    }
+    activeMode = data.mode;
+  } catch (e) {
+    log(`Mode-Wechsel-Fehler: ${e.message}`, 'err');
+    return;
+  }
+  updateModeTabs();
+  stopAllPlayers();
+  // Small delay so server-side ffmpeg has a moment to start producing
+  setTimeout(() => startStream(), 800);
+}
+
+function updateModeTabs() {
+  document.querySelectorAll('.mode-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === activeMode);
+  });
+}
+
+async function initStreamMode() {
+  try {
+    const res = await fetch('./api/video-mode');
+    const data = await res.json();
+    activeMode = data.mode || 'hls';
+  } catch {
+    activeMode = 'hls';
+  }
+  updateModeTabs();
+  document.querySelectorAll('.mode-tab').forEach((b) => {
+    b.addEventListener('click', () => setActiveMode(b.dataset.mode));
+  });
 }
 
 // Mute toggle

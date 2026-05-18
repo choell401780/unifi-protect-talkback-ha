@@ -30,7 +30,8 @@
 | `certfile` | Zertifikatsdatei aus `/ssl/` (z. B. `fullchain.pem`) | |
 | `keyfile` | Schlüsseldatei aus `/ssl/` (z. B. `privkey.pem`) | |
 | `log_level` | Protokollierungsstufe: `debug`, `info`, `warning`, `error` | |
-| `hls_reencode` | Video re-encoden für niedrige Live-Latenz (Default: `false`) | |
+| `video_mode` | Stream-Modus beim Start: `hls` (stabil) oder `mse` (low-latency). Default: `hls` | |
+| `hls_reencode` | Video re-encoden für niedrige HLS-Latenz (Default: `false`) | |
 | `hls_video_bitrate` | Ziel-Bitrate beim Re-Encode (Default: `2M`) | |
 | `hls_preset` | x264-Preset: `ultrafast`/`superfast`/`veryfast`/`faster`/`fast`/`medium` (Default: `veryfast`) | |
 | `hls_hwaccel` | Hardware-Beschleunigung: `none`/`vaapi`/`qsv`/`nvenc` (Default: `none`) | |
@@ -97,6 +98,50 @@ Bei aktiviertem SSL: `https://<HA-IP>:<web_port>`
 - **Display-Nachrichten**: Text auf dem LCD-Display der Türklingel anzeigen
 - **Klingelton-Steuerung**: Klingelton und Lautstärke der Türklingel sowie eines angeschlossenen PoE-Chimes einstellen
 - **Lautstärke**: Lautsprecher- und Mikrofonlautstärke der Kamera anpassen
+
+## Video-Modus: HLS vs. MSE
+
+Das Add-on bietet zwei Wiedergabe-Modi, die auch zur Laufzeit über die
+Weboberfläche umgeschaltet werden können (Tabs über dem Videobild):
+
+| Modus | Latenz | Audio | CPU | Empfohlen für |
+|---|---|---|---|---|
+| **HLS** (Default) | ~10 s (copy) / ~2–3 s (mit `hls_reencode`) | ✅ | minimal / hoch | maximale Stabilität, schwache Hardware, kompatibel mit allen Browsern |
+| **MSE** | ~1–2 s | ✅ | hoch (Re-Encode immer aktiv) | Türklingel-Live-Bild, schnelle Reaktion, moderne Browser |
+
+### Was ist MSE?
+
+MSE (**Media Source Extensions**) ist ein W3C-Standard, der direkt im Browser
+fragmented MP4 dekodiert. Das Add-on streamt die Fragmente über eine
+WebSocket-Verbindung (`/mse-stream`) — ohne Segmente auf Disk, ohne
+Playlist-Polling, daher deutlich niedrigere Latenz als HLS.
+
+**Vorteile vs. HLS**:
+- Latenz ~1–2 s statt 10 s
+- Funktioniert durch Home Assistant Ingress (reines HTTP/WS)
+- Audio + Video synchron
+
+**Nachteile vs. HLS**:
+- Höhere CPU-Last (ffmpeg re-encodet immer)
+- iOS Safari unterstützt kein MSE für Video (Fallback: HLS nutzen)
+- Bei Netzwerkausfall keine clientseitige Wiederholungslogik wie hls.js
+
+### Browser-Kompatibilität
+
+| Browser | HLS | MSE |
+|---|---|---|
+| Chrome / Edge (Desktop, Android) | ✅ via hls.js | ✅ |
+| Firefox | ✅ via hls.js | ✅ |
+| Safari (macOS) | ✅ nativ | ✅ |
+| Safari (iOS / iPadOS) | ✅ nativ | ❌ (Apple-Einschränkung — automatischer HLS-Fallback) |
+| Android-Tablet WebView | ✅ | ✅ |
+
+### Stream-Modus umschalten
+
+- **Im UI**: Tabs „HLS" / „MSE" über dem Video — Wechsel ist sofort wirksam,
+  Server startet die passende Pipeline neu.
+- **Im Add-on**: `video_mode: "mse"` als Standard hinterlegen.
+- **Per ENV** (Dev): `VIDEO_MODE=mse`.
 
 ## Live-Latenz optimieren (Re-Encoding)
 
