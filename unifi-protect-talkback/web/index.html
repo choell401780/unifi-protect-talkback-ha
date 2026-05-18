@@ -723,8 +723,13 @@ function stopAllPlayers() {
   const video = document.getElementById('video');
   if (hlsInstance) { try { hlsInstance.destroy(); } catch {} hlsInstance = null; }
   if (mseState) {
+    if (mseState.initTimeout) { clearTimeout(mseState.initTimeout); mseState.initTimeout = null; }
     try { mseState.ws && mseState.ws.close(); } catch {}
-    try { mseState.mediaSource && mseState.mediaSource.readyState === 'open' && mseState.mediaSource.endOfStream(); } catch {}
+    try {
+      if (mseState.mediaSource && mseState.mediaSource.readyState === 'open') {
+        mseState.mediaSource.endOfStream();
+      }
+    } catch {}
     mseState = null;
   }
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
@@ -824,7 +829,10 @@ function startMseStream() {
   const ms = new MediaSource();
   video.src = URL.createObjectURL(ms);
 
-  const state = { ws, mediaSource: ms, sourceBuffer: null, queue: [], retryCount: 0, codecs: null, gotInit: false };
+  const state = {
+    ws, mediaSource: ms, sourceBuffer: null, queue: [], retryCount: 0,
+    codecs: null, gotInit: false, waitLogged: false, initTimeout: null,
+  };
   mseState = state;
 
   const flushQueue = () => {
@@ -832,9 +840,23 @@ function startMseStream() {
     if (!sb || sb.updating || state.queue.length === 0) return;
     try { sb.appendBuffer(state.queue.shift()); }
     catch (e) {
-      log(`MSE appendBuffer-Fehler: ${e.message}`, 'err');
+      if (e.name === 'QuotaExceededError') {
+        // SourceBuffer full — drop oldest queued chunks and try again
+        state.queue = [];
+        log(`MSE Puffer voll – Queue zurückgesetzt`, 'err');
+      } else {
+        log(`MSE appendBuffer-Fehler: ${e.message}`, 'err');
+      }
     }
   };
+
+  // Safety-net: if no init arrives within 10s, fall back to HLS.
+  state.initTimeout = setTimeout(() => {
+    if (!state.gotInit && activeMode === 'mse') {
+      log('MSE Init-Timeout (10s) – Fallback auf HLS', 'err');
+      setActiveMode('hls');
+    }
+  }, 10000);
 
   ms.addEventListener('sourceopen', () => {
     log('MSE MediaSource open – warte auf Codec-Info');
@@ -849,6 +871,11 @@ function startMseStream() {
       // Control message (JSON)
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'init' && msg.codecs) {
+        if (state.initTimeout) { clearTimeout(state.initTimeout); state.initTimeout = null; }
+        if (state.gotInit) {
+          // Server pushed init again (e.g. reconnect path) — ignore second one
+          return;
+        }
         state.codecs = msg.codecs;
         const mime = `video/mp4; codecs="${msg.codecs}"`;
         if (!MediaSource.isTypeSupported(mime)) {
@@ -861,7 +888,7 @@ function startMseStream() {
             const sb = ms.addSourceBuffer(mime);
             sb.mode = 'segments';
             sb.addEventListener('updateend', flushQueue);
-            sb.addEventListener('error', (e) => log(`MSE SourceBuffer-Fehler`, 'err'));
+            sb.addEventListener('error', () => log(`MSE SourceBuffer-Fehler`, 'err'));
             state.sourceBuffer = sb;
             state.gotInit = true;
             log(`MSE bereit (Codecs: ${msg.codecs})`, 'ok');
@@ -877,7 +904,10 @@ function startMseStream() {
         if (ms.readyState === 'open') attach();
         else ms.addEventListener('sourceopen', attach, { once: true });
       } else if (msg.type === 'wait') {
-        log('MSE: warte auf Stream-Init…');
+        if (!state.waitLogged) {
+          state.waitLogged = true;
+          log('MSE: warte auf Stream-Init…');
+        }
       }
     } else {
       // Binary fragment
@@ -902,30 +932,42 @@ function startMseStream() {
 }
 
 // ── Mode switching ───────────────────────────────────────
+// Re-entrancy guard: keep clicks/tab-switches from racing each other.
+let modeSwitching = false;
 async function setActiveMode(mode) {
   if (mode === activeMode) return;
+  if (modeSwitching) {
+    log('Mode-Wechsel läuft bereits – ignoriert');
+    return;
+  }
+  modeSwitching = true;
   log(`Wechsle Stream-Modus: ${activeMode} → ${mode}`);
-  // Tell server first so it (re)starts the right pipeline
+  // Tear down our players BEFORE telling the server — avoids transient
+  // segment/WS errors while the new ffmpeg is spawning.
+  stopAllPlayers();
   try {
     const res = await fetch('./api/video-mode', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       log(`Mode-Wechsel abgelehnt: ${data.error || res.status}`, 'err');
+      modeSwitching = false;
       return;
     }
     activeMode = data.mode;
   } catch (e) {
     log(`Mode-Wechsel-Fehler: ${e.message}`, 'err');
+    modeSwitching = false;
     return;
   }
   updateModeTabs();
-  stopAllPlayers();
-  // Small delay so server-side ffmpeg has a moment to start producing
-  setTimeout(() => startStream(), 800);
+  // POST already returned only after the server's switchVideoMode resolved,
+  // so the new pipeline has started. Small grace period for ffmpeg to emit
+  // its first segment / init box.
+  setTimeout(() => { modeSwitching = false; startStream(); }, 500);
 }
 
 function updateModeTabs() {

@@ -3,7 +3,7 @@ import https from "node:https";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import WebSocket, { WebSocketServer } from "ws";
 import type { AxiosInstance } from "axios";
 import {
@@ -19,9 +19,59 @@ import {
 import type { ProtectSession, Camera, CameraDetails, Ringtone, ChimeDevice } from "./protect-client.js";
 
 const HTML_PATH = path.join(process.cwd(), "web", "index.html");
+// HLS uses an on-disk segment dir. MSE is in-memory only (no temp files).
+// Keeping HLS isolated under its own directory means MSE-mode cannot pollute
+// or be affected by stale .ts/.m3u8 files from a previous run.
 const HLS_DIR = path.join(os.tmpdir(), "protect-hls");
 
 fs.mkdirSync(HLS_DIR, { recursive: true });
+
+// Kill any leftover ffmpeg from a previous (crashed/killed) run that still
+// writes into OUR HLS_DIR. This is the root cause of "failed to rename
+// stream.m3u8.tmp" — two ffmpeg processes racing on the same files.
+// We match by full command line to avoid touching unrelated ffmpegs.
+function killStaleFfmpegs(): void {
+  try {
+    const r = spawnSync("pgrep", ["-f", HLS_DIR], { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout) return;
+    const pids = r.stdout.trim().split("\n").map((s) => parseInt(s, 10)).filter((n) => n > 0);
+    if (pids.length === 0) return;
+    console.warn(`[server] found ${pids.length} stale ffmpeg process(es) writing to ${HLS_DIR} — terminating: ${pids.join(", ")}`);
+    for (const pid of pids) {
+      try { process.kill(pid, "SIGTERM"); } catch { /* gone */ }
+    }
+    // Brief grace period, then SIGKILL anyone still alive
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      const alive = pids.filter((pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      });
+      if (alive.length === 0) break;
+      spawnSync("sleep", ["0.1"]);
+    }
+    for (const pid of pids) {
+      try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); console.warn(`[server] SIGKILL ${pid}`); }
+      catch { /* already gone, fine */ }
+    }
+  } catch (e) {
+    console.warn(`[server] stale-ffmpeg check skipped:`, e instanceof Error ? e.message : e);
+  }
+}
+killStaleFfmpegs();
+
+// Wipe any leftover segments from a previous (possibly crashed) ffmpeg.
+// Now safe because the previous ffmpeg (if any) was just terminated.
+try {
+  const stale = fs.readdirSync(HLS_DIR).filter(
+    (f) => f.endsWith(".ts") || f.endsWith(".m3u8") || f.endsWith(".tmp")
+  );
+  for (const f of stale) {
+    try { fs.unlinkSync(path.join(HLS_DIR, f)); } catch { /* race ok */ }
+  }
+  if (stale.length > 0) console.log(`[server] HLS_DIR=${HLS_DIR} cleaned (${stale.length} stale files on startup)`);
+} catch (e) {
+  console.warn(`[server] HLS_DIR initial cleanup skipped:`, e instanceof Error ? e.message : e);
+}
 
 export type DiscoveryOptions = {
   cameraId?: string;
@@ -169,15 +219,27 @@ class HlsManager {
   private _error: string | null = null;
   private _startedAt = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  // Set true once stop() is called — prevents the close-handler auto-restart
+  // from firing on a SIGTERM that we ourselves sent.
+  private stopping = false;
 
   constructor(private rtspUrl: string, private hlsDir: string) {}
 
   start(): void {
-    if (this.proc) return;
+    if (this.proc) {
+      console.log(`[hls] start() ignored — ffmpeg already running (pid=${this.proc.pid})`);
+      return;
+    }
+    this.stopping = false;
     this.spawn();
   }
 
   private spawn(): void {
+    // Defensive: clear any leftover segments before starting the new ffmpeg
+    // (prevents "failed to rename .tmp" / "failed to delete old segment" races
+    // when a previous process was still terminating).
+    HlsManager.cleanupDir(this.hlsDir);
+
     const m3u8 = path.join(this.hlsDir, "stream.m3u8");
     const segPattern = path.join(this.hlsDir, "seg%03d.ts");
 
@@ -219,6 +281,8 @@ class HlsManager {
 
     this._startedAt = Date.now();
     this.proc = spawn("ffmpeg", args);
+    const procPid = this.proc.pid;
+    console.log(`[hls] ffmpeg started (pid=${procPid})`);
 
     this.proc.stderr?.on("data", (d: Buffer) => {
       const line = d.toString().trim();
@@ -237,11 +301,12 @@ class HlsManager {
     });
 
     this.proc.on("close", (code) => {
-      console.log(`[hls] ffmpeg exit ${code}`);
+      console.log(`[hls] ffmpeg exit ${code} (pid=${procPid})`);
       this.proc = null;
       this._ready = false;
-      if (code !== 0 && code !== null) {
+      if (!this.stopping && code !== 0 && code !== null) {
         this._error = `ffmpeg exited (${code})`;
+        console.log(`[hls] scheduling restart in 8s`);
         this.restartTimer = setTimeout(() => this.spawn(), 8000);
       }
     });
@@ -249,11 +314,51 @@ class HlsManager {
     console.log(`[hls] starting ffmpeg RTSP→HLS (transport=${HLS_RTSP_TRANSPORT})`);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopping = true;
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
-    this.proc?.kill("SIGTERM");
+    const proc = this.proc;
     this.proc = null;
     this._ready = false;
+    if (proc) {
+      const pid = proc.pid;
+      console.log(`[hls] stopping ffmpeg (pid=${pid})`);
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = (): void => { if (!done) { done = true; resolve(); } };
+        proc.once("exit", finish);
+        proc.once("close", finish);
+        try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+        // Escalate to SIGKILL if SIGTERM didn't take in 2s
+        setTimeout(() => {
+          if (!done) {
+            console.warn(`[hls] SIGTERM timed out (pid=${pid}), sending SIGKILL`);
+            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+          }
+        }, 2000);
+        // Hard ceiling — never block longer than 5s
+        setTimeout(finish, 5000);
+      });
+      console.log(`[hls] ffmpeg stopped (pid=${pid})`);
+    }
+    HlsManager.cleanupDir(this.hlsDir);
+  }
+
+  // Remove leftover .ts/.m3u8/.tmp files. Called on stop and before each start
+  // so the new ffmpeg process gets a clean working directory.
+  static cleanupDir(dir: string): void {
+    try {
+      const files = fs.readdirSync(dir);
+      let removed = 0;
+      for (const f of files) {
+        if (f.endsWith(".ts") || f.endsWith(".m3u8") || f.endsWith(".tmp") || f.endsWith(".m3u8.tmp")) {
+          try { fs.unlinkSync(path.join(dir, f)); removed++; } catch { /* race ok */ }
+        }
+      }
+      if (removed > 0) console.log(`[hls] cleaned ${dir} (${removed} stale files removed)`);
+    } catch (e) {
+      console.error(`[hls] cleanup error:`, e instanceof Error ? e.message : e);
+    }
   }
 
   isReady(): boolean {
@@ -289,11 +394,21 @@ class MseManager {
   private lastKeyframeFragment: Buffer | null = null;
 
   private subscribers = new Set<WebSocket>();
+  // Tracks which subscribers have already received the init segment, so a
+  // late-arriving moov box only goes out once per client.
+  private subscriberInitSent = new WeakSet<WebSocket>();
+  // Set true once stop() is called — prevents the close handler from
+  // auto-restarting a stream that the user has switched away from.
+  private stopping = false;
 
   constructor(private rtspUrl: string) {}
 
   start(): void {
-    if (this.proc) return;
+    if (this.proc) {
+      console.log(`[mse] start() ignored — ffmpeg already running (pid=${this.proc.pid})`);
+      return;
+    }
+    this.stopping = false;
     this.spawn();
   }
 
@@ -331,6 +446,8 @@ class MseManager {
     console.log(`[mse] latency strategy: low (fMP4 over WebSocket, ~${(parseInt(MSE_FRAG_DURATION_US, 10) / 1000).toFixed(0)}ms fragments)`);
 
     this.proc = spawn("ffmpeg", args);
+    const procPid = this.proc.pid;
+    console.log(`[mse] ffmpeg started (pid=${procPid})`);
 
     this.proc.stdout?.on("data", (chunk: Buffer) => this.consume(chunk));
     this.proc.stderr?.on("data", (d: Buffer) => {
@@ -341,32 +458,57 @@ class MseManager {
       }
     });
     this.proc.on("close", (code) => {
-      console.log(`[mse] ffmpeg exit ${code}`);
+      console.log(`[mse] ffmpeg exit ${code} (pid=${procPid})`);
       this.proc = null;
       this._ready = false;
       this.byteBuf = Buffer.alloc(0);
       this.fragBuf = [];
-      if (code !== 0 && code !== null && this.subscribers.size > 0) {
+      // Auto-restart only if not deliberately stopped AND clients are waiting
+      if (!this.stopping && code !== 0 && code !== null && this.subscribers.size > 0) {
         this._error = `ffmpeg exited (${code})`;
+        console.log(`[mse] scheduling restart in 8s (subscribers=${this.subscribers.size})`);
         this.restartTimer = setTimeout(() => this.spawn(), 8000);
       }
     });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopping = true;
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
-    this.proc?.kill("SIGTERM");
+    const proc = this.proc;
     this.proc = null;
     this._ready = false;
+    if (proc) {
+      const pid = proc.pid;
+      console.log(`[mse] stopping ffmpeg (pid=${pid})`);
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = (): void => { if (!done) { done = true; resolve(); } };
+        proc.once("exit", finish);
+        proc.once("close", finish);
+        try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+        setTimeout(() => {
+          if (!done) {
+            console.warn(`[mse] SIGTERM timed out (pid=${pid}), sending SIGKILL`);
+            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+          }
+        }, 2000);
+        setTimeout(finish, 5000);
+      });
+      console.log(`[mse] ffmpeg stopped (pid=${pid})`);
+    }
     this.byteBuf = Buffer.alloc(0);
     this.initSegment = null;
     this.codecString = null;
     this.fragBuf = [];
     this.lastKeyframeFragment = null;
+    const n = this.subscribers.size;
     for (const ws of this.subscribers) {
       try { ws.close(1000, "stream stopped"); } catch { /* ignore */ }
     }
     this.subscribers.clear();
+    this.subscriberInitSent = new WeakSet();
+    if (n > 0) console.log(`[mse] disconnected ${n} subscriber(s) on stop`);
   }
 
   isReady(): boolean { return this._ready && this.initSegment !== null; }
@@ -409,6 +551,13 @@ class MseManager {
       this.codecString = this.parseCodecFromMoov(box) ?? 'avc1.42E01F,mp4a.40.2';
       this._ready = true;
       console.log(`[mse] init segment ready (${this.initSegment.length}B, codecs=${this.codecString})`);
+      // Push init to any subscribers that connected before it was ready.
+      // Without this, clients stay stuck on "warte auf Stream-Init…".
+      let pushed = 0;
+      for (const ws of this.subscribers) {
+        if (!this.subscriberInitSent.has(ws) && this.sendInitTo(ws)) pushed++;
+      }
+      if (pushed > 0) console.log(`[mse] pushed init to ${pushed} waiting subscriber(s)`);
       return;
     }
     if (type === "moof") {
@@ -498,22 +647,38 @@ class MseManager {
   // ── Subscriber lifecycle ────────────────────────────────────────────────────
   addSubscriber(ws: WebSocket): void {
     this.subscribers.add(ws);
-    ws.on("close", () => this.subscribers.delete(ws));
-    ws.on("error", () => this.subscribers.delete(ws));
+    ws.on("close", () => {
+      this.subscribers.delete(ws);
+      console.log(`[mse] subscriber disconnected (remaining=${this.subscribers.size})`);
+    });
+    ws.on("error", (e) => {
+      this.subscribers.delete(ws);
+      console.log(`[mse] subscriber error: ${e.message} (remaining=${this.subscribers.size})`);
+    });
 
     if (this.initSegment && this.codecString) {
-      // Send metadata as JSON text frame
-      try { ws.send(JSON.stringify({ type: "init", codecs: this.codecString })); }
-      catch { return; }
-      // Send init segment as binary frame
-      try { ws.send(this.initSegment); } catch { return; }
-      // Send last keyframe fragment so playback can start without waiting
-      // for the next GOP boundary.
-      if (this.lastKeyframeFragment) {
-        try { ws.send(this.lastKeyframeFragment); } catch { /* ignore */ }
-      }
+      this.sendInitTo(ws);
     } else {
       try { ws.send(JSON.stringify({ type: "wait" })); } catch { /* ignore */ }
+      console.log(`[mse] subscriber waiting for init (subscribers=${this.subscribers.size})`);
+    }
+  }
+
+  // Sends the init handshake (codec JSON + init segment + optional keyframe
+  // fragment) to a single subscriber. Returns true on success.
+  // Marks the subscriber via WeakSet so it doesn't receive duplicates.
+  private sendInitTo(ws: WebSocket): boolean {
+    if (!this.initSegment || !this.codecString) return false;
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    if (this.subscriberInitSent.has(ws)) return false;
+    try {
+      ws.send(JSON.stringify({ type: "init", codecs: this.codecString }));
+      ws.send(this.initSegment);
+      if (this.lastKeyframeFragment) ws.send(this.lastKeyframeFragment);
+      this.subscriberInitSent.add(ws);
+      return true;
+    } catch {
+      return false;
     }
   }
 }
@@ -592,17 +757,38 @@ export function startServer(
     }
   };
 
-  const stopVideoStream = (): void => {
-    hls?.stop(); hls = null;
-    mse?.stop(); mse = null;
+  const stopVideoStream = async (): Promise<void> => {
+    const tasks: Promise<void>[] = [];
+    if (hls) { console.log(`[stream] stopping HLS pipeline`); tasks.push(hls.stop()); }
+    if (mse) { console.log(`[stream] stopping MSE pipeline`); tasks.push(mse.stop()); }
+    await Promise.all(tasks);
+    hls = null;
+    mse = null;
+    console.log(`[stream] all pipelines stopped`);
   };
 
-  const switchVideoMode = (target: VideoMode): void => {
-    if (target === videoMode) return;
-    console.log(`[stream] switching mode: ${videoMode} → ${target}`);
-    stopVideoStream();
-    videoMode = target;
-    startVideoStream();
+  // Serialize concurrent mode-switch requests via a promise chain. Each new
+  // call .then()s onto the previous one, guaranteeing no two switch handlers
+  // run interleaved — eliminates the "two parallel ffmpegs in same temp dir"
+  // race that a flag-based lock had with its release window.
+  let switchQueue: Promise<void> = Promise.resolve();
+
+  const switchVideoMode = (target: VideoMode): Promise<void> => {
+    switchQueue = switchQueue.then(async () => {
+      if (target === videoMode) {
+        console.log(`[stream] switch noop — already in mode ${target}`);
+        return;
+      }
+      const from = videoMode;
+      console.log(`[stream] switching mode: ${from} → ${target}`);
+      await stopVideoStream();
+      videoMode = target;
+      startVideoStream();
+      console.log(`[stream] switch complete: ${from} → ${videoMode}`);
+    }).catch((e) => {
+      console.error(`[stream] switch error:`, e instanceof Error ? e.message : e);
+    });
+    return switchQueue;
   };
 
   const loadChimeData = async (): Promise<void> => {
@@ -818,8 +1004,9 @@ export function startServer(
       activeCameraId = target.id;
       console.log(`[discovery] user selected: "${target.name}" (${activeCameraId})`);
 
-      hls?.stop();
-      hls = null;
+      // Stop both pipelines (only one is active at a time, but be defensive
+      // in case a previous switch left a stale handle) before switching cam.
+      await stopVideoStream();
       cameraDetails = null;
       cameraDetailsError = null;
 
@@ -861,7 +1048,7 @@ export function startServer(
         json(res, { error: `invalid mode (expected hls|mse), got: ${target}` }, 400);
         return;
       }
-      switchVideoMode(target as VideoMode);
+      await switchVideoMode(target as VideoMode);
       json(res, { ok: true, mode: videoMode });
       return;
     }
@@ -1208,10 +1395,20 @@ export function startServer(
     browserWs.on("error", (e) => endSession(`browser error: ${e.message}`));
   });
 
-  // Cleanup on exit
-  const cleanup = (): void => { hls?.stop(); mse?.stop(); };
-  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
-  process.on("SIGINT", () => { cleanup(); process.exit(0); });
+  // Cleanup on exit — fire-and-forget but await briefly so ffmpeg gets SIGTERM
+  let exiting = false;
+  const cleanup = (signal: string): void => {
+    if (exiting) return;
+    exiting = true;
+    console.log(`[server] received ${signal}, shutting down…`);
+    void stopVideoStream()
+      .catch((e) => console.error("[server] cleanup error:", e))
+      .finally(() => process.exit(0));
+    // Hard exit after 6s if cleanup hangs
+    setTimeout(() => process.exit(0), 6000).unref();
+  };
+  process.on("SIGTERM", () => cleanup("SIGTERM"));
+  process.on("SIGINT", () => cleanup("SIGINT"));
 
   httpServer.listen(serverPort, () => {
     console.log(`[server] ${proto}://localhost:${serverPort}`);
