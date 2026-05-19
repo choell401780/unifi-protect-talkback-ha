@@ -850,13 +850,13 @@ function startMseStream() {
     }
   };
 
-  // Safety-net: if no init arrives within 10s, fall back to HLS.
+  // Safety-net: if no init arrives within 15s, fall back to HLS.
   state.initTimeout = setTimeout(() => {
     if (!state.gotInit && activeMode === 'mse') {
-      log('MSE Init-Timeout (10s) – Fallback auf HLS', 'err');
+      log('MSE Init-Timeout (15s) – Fallback auf HLS', 'err');
       setActiveMode('hls');
     }
-  }, 10000);
+  }, 15000);
 
   ms.addEventListener('sourceopen', () => {
     log('MSE MediaSource open – warte auf Codec-Info');
@@ -920,13 +920,17 @@ function startMseStream() {
 
   ws.addEventListener('close', (ev) => {
     if (activeMode !== 'mse') return;
+    // Stale check: mseState may have been replaced by a newer session
+    if (!mseState || mseState.ws !== ws) return;
     state.retryCount++;
     const delay = Math.min(2000 * state.retryCount, 20000);
     log(`MSE WS geschlossen (${ev.code}) – Retry in ${delay/1000}s`, 'err');
     showOverlay(`MSE getrennt – Retry in ${delay/1000}s…`, true);
-    setTimeout(() => { if (activeMode === 'mse') startMseStream(); }, delay);
+    mseState = null; // clear before retry so the staleness check in the new session works
+    setTimeout(() => { if (activeMode === 'mse' && !mseState) startMseStream(); }, delay);
   });
   ws.addEventListener('error', () => {
+    if (!mseState || mseState.ws !== ws) return;
     log('MSE WS-Fehler', 'err');
   });
 }

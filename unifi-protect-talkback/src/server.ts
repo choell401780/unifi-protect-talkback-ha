@@ -231,10 +231,16 @@ class HlsManager {
       return;
     }
     this.stopping = false;
+    // Cancel a pending auto-restart so start() + timer don't both call spawn() concurrently
+    if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
     this.spawn();
   }
 
   private spawn(): void {
+    if (this.proc) {
+      console.warn(`[hls] spawn() skipped — ffmpeg already running (pid=${this.proc.pid})`);
+      return;
+    }
     // Defensive: clear any leftover segments before starting the new ffmpeg
     // (prevents "failed to rename .tmp" / "failed to delete old segment" races
     // when a previous process was still terminating).
@@ -409,10 +415,15 @@ class MseManager {
       return;
     }
     this.stopping = false;
+    if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
     this.spawn();
   }
 
   private spawn(): void {
+    if (this.proc) {
+      console.warn(`[mse] spawn() skipped — ffmpeg already running (pid=${this.proc.pid})`);
+      return;
+    }
     const args = [
       "-hide_banner", "-nostats",
       "-fflags", "nobuffer+flush_packets", "-flags", "low_delay",
@@ -435,7 +446,11 @@ class MseManager {
       "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "96k",
       // fMP4 output
       "-f", "mp4",
-      "-movflags", "empty_moov+default_base_moof+frag_keyframe+separate_moof+omit_tfhd_offset",
+      // frag_keyframe: new fragment at each keyframe (and sub-keyframe via frag_duration)
+      // default_base_moof: base offsets relative to moof — required for streaming
+      // No empty_moov: real moov with codec info → parseCodecFromMoov works correctly
+      // No separate_moof: audio+video interleaved in one moof+mdat → single SourceBuffer OK
+      "-movflags", "frag_keyframe+default_base_moof",
       "-frag_duration", MSE_FRAG_DURATION_US,
       "pipe:1",
     ];
@@ -573,12 +588,11 @@ class MseManager {
       return;
     }
     if (type === "styp" || type === "sidx" || type === "free") {
-      // Optional MP4 boxes — pass through to subscribers as part of the
-      // current fragment.
-      this.fragBuf.push(Buffer.from(box));
+      // Segment-level housekeeping boxes — drop; not needed for MSE streaming
+      // (including them in fragBuf would cause a spurious partial-flush on the next moof)
       return;
     }
-    // Unknown / ignored boxes (e.g. 'free' padding) — drop silently
+    // Unknown / ignored boxes — drop silently
   }
 
   private flushFragment(): void {
@@ -741,6 +755,10 @@ export function startServer(
 
   const startVideoStream = (): void => {
     if (!activeCameraId) return;
+    if (hls || mse) {
+      console.warn(`[stream] startVideoStream() called while pipeline already active — skipping (hls=${!!hls} mse=${!!mse})`);
+      return;
+    }
     const rtspUrl = buildRtspUrl();
     if (!rtspUrl) {
       console.warn("[stream] no RTSP channel or host configured");
