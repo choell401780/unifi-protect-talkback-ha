@@ -116,12 +116,6 @@ function json(res: http.ServerResponse, data: unknown, status = 200): void {
 }
 
 // Low-latency HLS knobs — overridable via env for differing camera GOP / hardware.
-// LL-HLS (low_latency flag + fMP4) requires re-encode to guarantee sub-second GOPs.
-// Without re-encode the camera's GOP (~5 s) makes LL-HLS pointless, so LL is only
-// activated when HLS_REENCODE is set.
-const HLS_LL = HLS_REENCODE; // true → LL-HLS (fMP4, 0.5 s segments, low_latency)
-const HLS_TIME = process.env["HLS_TIME"] ?? (HLS_LL ? "0.5" : "1");
-const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "6" : "3"); // 6×0.5 s = 3 s window
 const HLS_ANALYZEDURATION = process.env["HLS_ANALYZEDURATION"] ?? "1000000"; // 1s
 const HLS_PROBESIZE = process.env["HLS_PROBESIZE"] ?? "500000";              // 500KB
 const HLS_RTSP_TRANSPORT = process.env["HLS_RTSP_TRANSPORT"] ?? "tcp";       // tcp = stable
@@ -130,6 +124,13 @@ const HLS_RTSP_TRANSPORT = process.env["HLS_RTSP_TRANSPORT"] ?? "tcp";       // 
 // When enabled, ffmpeg forces 1s keyframes → playable segments at the configured
 // hls_time. Costs CPU; default off to stay stable on weak hardware.
 const HLS_REENCODE = process.env["HLS_REENCODE"] === "1";
+
+// LL-HLS (low_latency flag + fMP4) requires re-encode to guarantee sub-second GOPs.
+// Without re-encode the camera's GOP (~5 s) makes LL-HLS pointless, so LL is only
+// activated when HLS_REENCODE is set.
+const HLS_LL = HLS_REENCODE; // true → LL-HLS (fMP4, 0.5 s segments, low_latency)
+const HLS_TIME = process.env["HLS_TIME"] ?? (HLS_LL ? "0.5" : "1");
+const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "6" : "3"); // 6×0.5 s = 3 s window
 const HLS_VIDEO_BITRATE = process.env["HLS_VIDEO_BITRATE"] ?? "2M";
 const HLS_PRESET = process.env["HLS_PRESET"] ?? "veryfast";   // x264 preset
 // Hardware acceleration scaffolding — "none" = software libx264 (default, stable).
