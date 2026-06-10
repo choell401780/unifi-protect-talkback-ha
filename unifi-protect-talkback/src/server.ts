@@ -401,8 +401,9 @@ class MseManager {
 
   // HEVC warmup: suppress fragment delivery until the decoder has locked onto
   // its first IDR. lastHevcErrorMs=0 means "no HEVC errors seen" (H.264 camera)
-  // → hevcClean() returns true immediately → warmup completes on first fragment.
+  // → hevcClean() returns true immediately → warmup completes on first IDR fragment.
   private lastHevcErrorMs = 0;
+  private hevcCleanSince = 0;  // timestamp when hevcClean() first became true
   private hevcWarmupDone = false;
 
   private subscribers = new Set<WebSocket>();
@@ -532,6 +533,7 @@ class MseManager {
     this.lastKeyframeFragment = null;
     this.hevcWarmupDone = false;
     this.lastHevcErrorMs = 0;
+    this.hevcCleanSince = 0;
     const n = this.subscribers.size;
     for (const ws of this.subscribers) {
       try { ws.close(1000, "stream stopped"); } catch { /* ignore */ }
@@ -553,6 +555,68 @@ class MseManager {
     if (this.lastHevcErrorMs === 0) return true;
     const gopMs = parseInt(HLS_TIME, 10) * 1000 + 500; // 1 GOP + 500ms buffer
     return Date.now() - this.lastHevcErrorMs > gopMs;
+  }
+
+  // Returns true if the fMP4 fragment (moof+mdat) starts with an H.264 IDR
+  // (keyframe). Parses traf→tfhd.default_sample_flags and trun.first_sample_flags.
+  // Bit 0x01000000 = sample_is_non_sync_sample; if unset → sync/keyframe.
+  // Falls back to false (conservative) on any parse error.
+  private isKeyframeFragment(fragment: Buffer): boolean {
+    try {
+      if (fragment.length < 8) return false;
+      const moofSize = fragment.readUInt32BE(0);
+      if (fragment.subarray(4, 8).toString("ascii") !== "moof") return false;
+      const moof = fragment.subarray(0, Math.min(moofSize, fragment.length));
+
+      // Walk top-level boxes inside moof to find traf
+      let off = 8;
+      while (off + 8 <= moof.length) {
+        const size = moof.readUInt32BE(off);
+        if (size < 8) break;
+        if (moof.subarray(off + 4, off + 8).toString("ascii") === "traf") {
+          const trafEnd = off + size;
+          let tfhdDefaultSampleFlags: number | null = null;
+          let trunFirstSampleFlags: number | null = null;
+
+          let toff = off + 8;
+          while (toff + 8 <= trafEnd) {
+            const ts = moof.readUInt32BE(toff);
+            if (ts < 8) break;
+            const tt = moof.subarray(toff + 4, toff + 8).toString("ascii");
+
+            if (tt === "tfhd" && toff + 16 <= moof.length) {
+              // version(1)+flags(3)+track_id(4) = 8 bytes after box header
+              const fl = ((moof[toff + 8]! << 16) | (moof[toff + 9]! << 8) | moof[toff + 10]!) >>> 0;
+              if (fl & 0x000020) { // default_sample_flags present
+                let foff = toff + 16;
+                if (fl & 0x000001) foff += 8; // base_data_offset
+                if (fl & 0x000002) foff += 4; // sample_description_index
+                if (fl & 0x000008) foff += 4; // default_sample_duration
+                if (fl & 0x000010) foff += 4; // default_sample_size
+                if (foff + 4 <= moof.length) tfhdDefaultSampleFlags = moof.readUInt32BE(foff);
+              }
+            }
+
+            if (tt === "trun" && toff + 16 <= moof.length) {
+              const fl = ((moof[toff + 8]! << 16) | (moof[toff + 9]! << 8) | moof[toff + 10]!) >>> 0;
+              if (fl & 0x000004) { // first_sample_flags present
+                let foff = toff + 16; // after version+flags+sample_count
+                if (fl & 0x000001) foff += 4; // data_offset
+                if (foff + 4 <= moof.length) trunFirstSampleFlags = moof.readUInt32BE(foff);
+              }
+            }
+
+            toff += ts;
+          }
+
+          // trun.first_sample_flags overrides tfhd.default_sample_flags for the first sample
+          const effective = trunFirstSampleFlags ?? tfhdDefaultSampleFlags ?? 0x01000000;
+          return (effective & 0x01000000) === 0; // non-sync bit unset → keyframe
+        }
+        off += size;
+      }
+    } catch { /* ignore parse errors — treated as non-keyframe */ }
+    return false;
   }
 
   // ── MP4 box scanner ────────────────────────────────────────────────────────
@@ -630,21 +694,34 @@ class MseManager {
     this.fragBuf = [];
 
     if (!this.hevcWarmupDone) {
-      if (!this.hevcClean()) return; // HEVC still syncing — discard fragment
-      // Warmup complete: HEVC has been error-free for 1 GOP, H.264 IDR flushed.
+      if (!this.hevcClean()) {
+        this.hevcCleanSince = 0;
+        return; // HEVC still syncing — discard fragment
+      }
+      if (this.hevcCleanSince === 0) this.hevcCleanSince = Date.now();
+
+      const isKf = this.isKeyframeFragment(fragment);
+      // Safety fallback: if hevcClean for >5 s but no IDR detected (parser issue),
+      // force-start anyway so the stream doesn't stall indefinitely.
+      const timedOut = Date.now() - this.hevcCleanSince > 5000;
+      if (!isKf && !timedOut) return; // wait for first clean IDR fragment
+
+      // First keyframe fragment after HEVC sync — go live
       this.hevcWarmupDone = true;
       const lag = this.lastHevcErrorMs > 0
         ? `${((Date.now() - this.lastHevcErrorMs) / 1000).toFixed(1)}s after last HEVC error`
         : `immediately (no HEVC errors)`;
-      console.log(`[mse] HEVC warmup complete (${lag}) — sending init to waiting subscribers`);
-      // Push init to all waiting subscribers (no fragment yet — avoids double-send below)
+      const reason = isKf ? "first clean IDR fragment" : "5 s timeout (IDR detection fallback)";
+      console.log(`[mse] HEVC warmup complete (${lag}, ${reason}) — sending init to subscribers`);
+      this.lastKeyframeFragment = fragment;
       let pushed = 0;
       for (const ws of this.subscribers) {
         if (!this.subscriberInitSent.has(ws) && this.sendInitTo(ws)) pushed++;
       }
       if (pushed > 0) console.log(`[mse] pushed init to ${pushed} subscriber(s)`);
-      // Cache first clean fragment for late subscribers
-      this.lastKeyframeFragment = fragment;
+      // Fall through — send the IDR fragment to all subscribers below
+    } else if (this.isKeyframeFragment(fragment)) {
+      this.lastKeyframeFragment = fragment; // keep fresh for late subscribers
     } else if (!this.lastKeyframeFragment) {
       this.lastKeyframeFragment = fragment;
     }
