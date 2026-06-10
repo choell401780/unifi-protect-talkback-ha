@@ -488,13 +488,216 @@
     .lt { color: #444; flex-shrink: 0; }
     .lok { color: var(--green); }
     .lerr { color: var(--red); }
+
+    /* ── Kiosk / touch base (always) ────────────────────── */
+    html, body { height: 100%; }
+    body { overscroll-behavior: none; }
+    button, select, input, label {
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    #talk-btn, #door-btn { touch-action: none; }
+
+    /* ── Tablet toggle button ────────────────────────────── */
+    #tablet-toggle {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      background: #2c2c2c;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    #tablet-toggle.active {
+      background: #1a2e1a;
+      color: var(--green);
+      border-color: var(--green);
+    }
+
+    /* ── Log collapse header ─────────────────────────────── */
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+    .log-header .card-title { margin-bottom: 0; }
+    #log-toggle {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 4px;
+      padding: 0.1rem 0.5rem;
+      font-size: 0.7rem;
+      cursor: pointer;
+      line-height: 1.5;
+    }
+
+    /* ── Slider ±  adjustment buttons ────────────────────── */
+    .slider-adj {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #222;
+      color: var(--text);
+      font-size: 1rem;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      line-height: 1;
+    }
+    .slider-adj:hover  { background: #2e2e2e; }
+    .slider-adj:active { background: #383838; }
+
+    /* ── Tablet mode (body.tablet) ───────────────────────── */
+    body.tablet { font-size: 18px; }
+
+    body.tablet header { padding: 0.75rem 1rem; }
+    body.tablet header h1 { font-size: 1.1rem; }
+    body.tablet .badge { font-size: 0.8rem; padding: 0.3rem 0.7rem; }
+
+    body.tablet main { max-width: 100%; padding: 0.65rem; gap: 0.65rem; }
+
+    /* Portrait (<900px): single column — landscape: 2 columns */
+    @media (max-width: 899px) {
+      body.tablet main { grid-template-columns: 1fr; }
+    }
+    @media (min-width: 900px) {
+      body.tablet main { grid-template-columns: 1fr 1fr; }
+      body.tablet #stream-card,
+      body.tablet #log-card { grid-column: 1 / -1; }
+    }
+
+    body.tablet .card { padding: 1.1rem; border-radius: 14px; }
+    body.tablet .card-title { font-size: 0.85rem; margin-bottom: 1rem; }
+
+    /* Video — limit height so action buttons are visible below */
+    body.tablet .video-wrap { max-height: 48vh; }
+    body.tablet .video-overlay { font-size: 1rem; }
+    body.tablet .spinner { width: 36px; height: 36px; border-width: 4px; }
+    body.tablet #stream-label { font-size: 0.9rem; }
+    body.tablet .video-controls { margin-top: 0.65rem; }
+    body.tablet .mode-tab {
+      min-height: 52px;
+      font-size: 0.9rem;
+      padding: 0.6rem 0.8rem;
+    }
+    body.tablet .mode-tab .tab-hint { font-size: 0.75rem; }
+    body.tablet #mute-btn {
+      min-height: 48px;
+      padding: 0.4rem 1rem;
+      font-size: 0.9rem;
+    }
+
+    /* Talkback — centered buttons, status below */
+    body.tablet .talk-row {
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1.5rem;
+    }
+    body.tablet #talk-btn,
+    body.tablet #door-btn { width: 120px; height: 120px; font-size: 1rem; }
+    body.tablet #talk-status { width: 100%; text-align: center; font-size: 1rem; }
+
+    /* Primary / ghost buttons */
+    body.tablet .btn-primary {
+      min-height: 56px;
+      padding: 0.75rem 1.2rem;
+      font-size: 1rem;
+      border-radius: 8px;
+    }
+    body.tablet .btn-ghost {
+      min-height: 56px;
+      padding: 0.7rem 1rem;
+      font-size: 0.95rem;
+      border-radius: 8px;
+    }
+
+    /* Preset buttons */
+    body.tablet .preset-btn {
+      min-height: 56px;
+      padding: 0.65rem 1rem;
+      font-size: 0.95rem;
+      border-radius: 8px;
+    }
+
+    /* Message input */
+    body.tablet .msg-row input {
+      min-height: 56px;
+      padding: 0.7rem 0.9rem;
+      font-size: 1rem;
+    }
+    body.tablet #msg-current { font-size: 0.85rem; margin-top: 0.5rem; }
+
+    /* Select & preview */
+    body.tablet select {
+      min-height: 56px;
+      padding: 0.65rem 0.7rem;
+      font-size: 1rem;
+      margin-bottom: 0.9rem;
+    }
+    body.tablet .preview-btn { min-height: 56px; min-width: 56px; font-size: 1.2rem; }
+
+    /* Sliders */
+    body.tablet .slider-row { gap: 0.8rem; margin-bottom: 1rem; align-items: center; }
+    body.tablet .s-label { font-size: 0.95rem; width: 110px; }
+    body.tablet .s-val   { font-size: 0.95rem; width: 44px; }
+    body.tablet .slider-adj { width: 44px; height: 44px; font-size: 1.3rem; border-radius: 8px; }
+    body.tablet input[type="range"] { height: 44px; }
+    body.tablet input[type="range"]::-webkit-slider-runnable-track {
+      height: 8px; border-radius: 4px; background: #333;
+    }
+    body.tablet input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: var(--blue);
+      cursor: pointer;
+      margin-top: -12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    body.tablet input[type="range"]::-moz-range-track {
+      height: 8px; border-radius: 4px; background: #333;
+    }
+    body.tablet input[type="range"]::-moz-range-thumb {
+      width: 28px; height: 28px;
+      border-radius: 50%; background: var(--blue);
+      cursor: pointer; border: none;
+    }
+
+    /* Chime sections */
+    body.tablet .chime-section { padding: 1rem; border-radius: 10px; }
+    body.tablet .chime-section-title { font-size: 0.9rem; margin-bottom: 0.9rem; }
+    body.tablet .chime-device-badge { font-size: 0.78rem; }
+    body.tablet .chime-save-row { gap: 0.8rem; margin-top: 1rem; }
+    body.tablet .save-feedback { font-size: 0.9rem; }
+
+    /* Log */
+    body.tablet #log { font-size: 0.8rem; }
+    body.tablet #log-toggle { font-size: 0.8rem; padding: 0.2rem 0.65rem; }
+
+    /* Device discovery */
+    body.tablet .device-card { padding: 1rem 1.2rem; }
+    body.tablet .device-card strong { font-size: 1rem; }
+    body.tablet .device-card .dc-sub { font-size: 0.85rem; }
+
+    @supports (padding-bottom: env(safe-area-inset-bottom)) {
+      body { padding-bottom: env(safe-area-inset-bottom); }
+    }
   </style>
 </head>
 <body>
 
 <header>
   <h1>🔔 Türklingel</h1>
-  <span class="badge" id="nvr-badge">Verbinde…</span>
+  <div style="display:flex;align-items:center;gap:0.5rem">
+    <button id="tablet-toggle" title="Tablet-Modus umschalten">⊞ Tablet</button>
+    <span class="badge" id="nvr-badge">Verbinde…</span>
+  </div>
 </header>
 
 <!-- Device discovery (shown when auto-discovery needs user input) -->
@@ -557,7 +760,10 @@
 
   <!-- Log -->
   <div class="card" id="log-card">
-    <div class="card-title">Protokoll</div>
+    <div class="log-header">
+      <div class="card-title">Protokoll</div>
+      <button id="log-toggle" title="Protokoll ausblenden">▲</button>
+    </div>
     <div id="log"></div>
   </div>
 
@@ -1072,7 +1278,9 @@ function sliderRow(id, label, val, valId, min = 0, max = 100, step = 1) {
   const suffix = max <= 20 ? 'x' : '%';
   return `<div class="slider-row">
     <span class="s-label">${label}</span>
+    <button class="slider-adj" data-target="${id}" data-delta="-${step}" tabindex="-1">−</button>
     <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}">
+    <button class="slider-adj" data-target="${id}" data-delta="${step}" tabindex="-1">+</button>
     <span class="s-val" id="${valId}">${val}${suffix}</span>
   </div>`;
 }
@@ -1506,6 +1714,59 @@ function setupTalkback() {
   }
 }
 
+// ── Tablet mode ──────────────────────────────────────────
+let tabletMode = false;
+
+function applyTabletMode(on) {
+  tabletMode = on;
+  document.body.classList.toggle('tablet', on);
+  const btn = document.getElementById('tablet-toggle');
+  if (btn) btn.classList.toggle('active', on);
+  localStorage.setItem('tablet-mode', on ? '1' : '0');
+}
+
+function initLogCollapse() {
+  const logDiv = document.getElementById('log');
+  const btn = document.getElementById('log-toggle');
+  if (!btn || !logDiv) return;
+  let collapsed = tabletMode; // default: collapsed in tablet mode
+  function update() {
+    logDiv.style.display = collapsed ? 'none' : '';
+    btn.textContent = collapsed ? '▼' : '▲';
+    btn.title = collapsed ? 'Protokoll einblenden' : 'Protokoll ausblenden';
+  }
+  update();
+  btn.addEventListener('click', () => { collapsed = !collapsed; update(); });
+}
+
+function initTabletMode() {
+  const param = new URLSearchParams(location.search).get('tablet');
+  let on;
+  if (param === '1' || param === '0') {
+    on = param === '1';
+  } else {
+    const stored = localStorage.getItem('tablet-mode');
+    on = stored !== null
+      ? stored === '1'
+      : (navigator.maxTouchPoints > 0 && window.innerWidth <= 1280);
+  }
+  applyTabletMode(on);
+  document.getElementById('tablet-toggle')?.addEventListener('click', () => applyTabletMode(!tabletMode));
+  initLogCollapse();
+}
+
+// Slider ± buttons — event-delegated so dynamically-rendered sliders work too
+document.addEventListener('click', e => {
+  const adj = e.target.closest('.slider-adj');
+  if (!adj) return;
+  const inp = document.getElementById(adj.dataset.target);
+  if (!inp) return;
+  inp.value = Math.min(parseFloat(inp.max), Math.max(parseFloat(inp.min),
+    parseFloat(inp.value) + parseFloat(adj.dataset.delta)));
+  inp.dispatchEvent(new Event('input', { bubbles: true }));
+});
+
+initTabletMode();
 init();
 </script>
 </body>
