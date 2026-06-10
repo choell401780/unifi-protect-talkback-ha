@@ -1106,18 +1106,32 @@ export function startServer(
       return;
     }
 
-    // HLS segments — regex prevents path traversal
-    const segMatch = url.match(/^\/hls\/(seg\d{3}\.ts)$/);
+    // HLS segments — regex prevents path traversal; handles both TS and fMP4 (m4s)
+    const segMatch = url.match(/^\/hls\/(seg\d{3}\.(ts|m4s))$/);
     if (method === "GET" && segMatch?.[1]) {
       const segFile = path.join(HLS_DIR, segMatch[1]);
       if (!fs.existsSync(segFile)) { res.writeHead(404); res.end(); return; }
       const segHeaders: Record<string, string> = {
-        "Content-Type": "video/mp2t",
+        "Content-Type": segMatch[2] === "m4s" ? "video/iso.segment" : "video/mp2t",
         "Cache-Control": "no-cache",
       };
       if (CORS_ALLOW_ORIGIN) segHeaders["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN;
       res.writeHead(200, segHeaders);
       fs.createReadStream(segFile).pipe(res);
+      return;
+    }
+
+    // fMP4 init segment (EXT-X-MAP) — only present when hls_reencode is on
+    if (method === "GET" && url === "/hls/init.mp4") {
+      const initFile = path.join(HLS_DIR, "init.mp4");
+      if (!fs.existsSync(initFile)) { res.writeHead(404); res.end(); return; }
+      const initHeaders: Record<string, string> = {
+        "Content-Type": "video/mp4",
+        "Cache-Control": "no-cache",
+      };
+      if (CORS_ALLOW_ORIGIN) initHeaders["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN;
+      res.writeHead(200, initHeaders);
+      fs.createReadStream(initFile).pipe(res);
       return;
     }
 
