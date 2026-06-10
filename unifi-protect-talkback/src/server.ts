@@ -130,7 +130,7 @@ const HLS_REENCODE = process.env["HLS_REENCODE"] === "1";
 // activated when HLS_REENCODE is set.
 const HLS_LL = HLS_REENCODE; // true → LL-HLS (fMP4, 0.5 s segments, low_latency)
 const HLS_TIME = process.env["HLS_TIME"] ?? (HLS_LL ? "0.5" : "1");
-const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "6" : "3"); // 6×0.5 s = 3 s window
+const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "4" : "3"); // 4×0.5 s = 2 s window
 const HLS_VIDEO_BITRATE = process.env["HLS_VIDEO_BITRATE"] ?? "2M";
 const HLS_PRESET = process.env["HLS_PRESET"] ?? "veryfast";   // x264 preset
 // Hardware acceleration scaffolding — "none" = software libx264 (default, stable).
@@ -205,6 +205,7 @@ function buildEncoderArgs(): { inputFlags: string[]; videoArgs: string[] } {
           "-preset", HLS_PRESET,
           "-tune", "zerolatency",
           "-profile:v", "baseline",
+          "-refs", "1",
           "-pix_fmt", "yuv420p",
           "-force_key_frames", forceKey,
           "-sc_threshold", "0",

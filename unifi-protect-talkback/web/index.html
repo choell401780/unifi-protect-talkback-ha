@@ -993,8 +993,8 @@ function startHlsStream() {
       debug: false,
       enableWorker: true,
       lowLatencyMode: true,
-      liveSyncDuration: 1,           // target: 1 s behind live edge
-      liveMaxLatencyDuration: 4,     // catch-up above 4 s delay
+      liveSyncDuration: 0.5,         // target: 0.5 s behind live edge (= 1 segment)
+      liveMaxLatencyDuration: 2,     // catch-up above 2 s delay
       maxBufferLength: 4,
       backBufferLength: 1,
       maxFragLookUpTolerance: 0.1,
