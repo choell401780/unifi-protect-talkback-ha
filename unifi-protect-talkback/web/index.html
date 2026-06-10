@@ -132,58 +132,24 @@
 
     #stream-label { font-size: 0.75rem; color: var(--muted); }
 
-    .mode-tabs {
-      display: flex;
-      gap: 0.25rem;
-      margin-bottom: 0.5rem;
-      flex-wrap: wrap;
-    }
-    .mode-tab {
-      flex: 1;
-      min-width: 100px;
-      padding: 0.4rem 0.6rem;
-      border: 1px solid #333;
-      background: #1a1a1a;
-      color: var(--muted);
-      border-radius: 4px;
-      font-size: 0.75rem;
-      cursor: pointer;
-      text-align: center;
-      transition: all 0.15s;
-    }
-    .mode-tab:not(:disabled):hover { border-color: var(--blue); }
-    .mode-tab.active {
-      background: var(--blue);
-      color: #fff;
-      border-color: var(--blue);
-    }
-    .mode-tab:disabled {
-      cursor: not-allowed;
-      opacity: 0.45;
-      border-color: #333;
-    }
-    .mode-tab .tab-hint { display: block; font-size: 0.65rem; opacity: 0.7; margin-top: 0.1rem; }
-
-    #mse-notice {
-      font-size: 0.7rem;
-      color: var(--muted);
-      padding: 0.25rem 0.5rem;
-      background: #1a1a1a;
-      border: 1px solid #333;
-      border-radius: 4px;
-      margin-bottom: 0.35rem;
-      display: none;
-    }
-    #mse-notice.visible { display: block; }
-
     #mute-btn {
-      background: none;
-      border: 1px solid var(--border);
+      width: 88px;
+      height: 88px;
+      border-radius: 50%;
+      border: 3px solid var(--border);
+      background: #1a1a1a;
       color: var(--text);
-      border-radius: 6px;
-      padding: 0.2rem 0.6rem;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
+      font-weight: 600;
       cursor: pointer;
+      user-select: none;
+      transition: background 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+      line-height: 1.3;
+    }
+    #mute-btn.unmuted {
+      border-color: var(--blue);
+      background: #1a2535;
     }
     #mute-btn:hover { background: #252525; }
 
@@ -599,17 +565,6 @@
     body.tablet .spinner { width: 36px; height: 36px; border-width: 4px; }
     body.tablet #stream-label { font-size: 0.9rem; }
     body.tablet .video-controls { margin-top: 0.65rem; }
-    body.tablet .mode-tab {
-      min-height: 52px;
-      font-size: 0.9rem;
-      padding: 0.6rem 0.8rem;
-    }
-    body.tablet .mode-tab .tab-hint { font-size: 0.75rem; }
-    body.tablet #mute-btn {
-      min-height: 48px;
-      padding: 0.4rem 1rem;
-      font-size: 0.9rem;
-    }
 
     /* Talkback — centered buttons, status below */
     body.tablet .talk-row {
@@ -618,6 +573,7 @@
       gap: 1.5rem;
     }
     body.tablet #talk-btn,
+    body.tablet #mute-btn,
     body.tablet #door-btn { width: 150px; height: 150px; font-size: 1rem; }
     body.tablet #talk-status { width: 100%; text-align: center; font-size: 1rem; }
 
@@ -731,11 +687,6 @@
   <!-- Camera stream -->
   <div class="card" id="stream-card">
     <div class="card-title">Kamerabild · Live</div>
-    <div class="mode-tabs" id="mode-tabs">
-      <button class="mode-tab" data-mode="hls">HLS<span class="tab-hint">stabil ~10 s</span></button>
-      <button class="mode-tab" data-mode="mse" disabled title="MSE ist experimentell und derzeit deaktiviert">MSE<span class="tab-hint">deaktiviert</span></button>
-    </div>
-    <div id="mse-notice">⚠ MSE ist aktuell deaktiviert. HLS wird verwendet.</div>
     <div class="video-wrap">
       <video id="video" autoplay muted playsinline></video>
       <div class="video-overlay" id="stream-overlay">
@@ -745,7 +696,6 @@
     </div>
     <div class="video-controls">
       <span id="stream-label"></span>
-      <button id="mute-btn">🔇 Ton ein</button>
     </div>
   </div>
 
@@ -755,6 +705,7 @@
     <div class="talk-row">
       <button id="talk-btn">Sprechen<br>halten</button>
       <button id="door-btn">🔓 Tür<br>öffnen</button>
+      <button id="mute-btn">🔇<br>Ton ein</button>
       <div id="talk-status">Bereit</div>
     </div>
   </div>
@@ -800,8 +751,6 @@ let speakerTimer = null, micTimer = null;
 let hlsInstance = null;
 let hlsRetryCount = 0;
 let hlsStartTime = 0;  // ms timestamp when HLS mode was last activated
-let mseState = null;            // { ws, mediaSource, sourceBuffer, queue, retryCount }
-let activeMode = 'hls';         // 'hls' | 'mse'
 let currentPreview = null;
 let currentPreviewBtn = null;
 
@@ -826,8 +775,8 @@ async function init() {
   await loadStatus();
   await loadSettings();
   await loadChimeSettings();
-  await initStreamMode();
-  startStream();
+  hlsStartTime = Date.now();
+  startHlsStream();
   setupTalkback();
 }
 
@@ -903,7 +852,8 @@ async function selectDevice(id) {
     await loadStatus();
     await loadSettings();
     await loadChimeSettings();
-    startStream();
+    hlsStartTime = Date.now();
+    startHlsStream();
     setupTalkback();
   } catch (e) {
     log('Auswahl-Fehler: ' + e.message, 'err');
@@ -948,16 +898,6 @@ function hideOverlay() {
 function stopAllPlayers() {
   const video = document.getElementById('video');
   if (hlsInstance) { try { hlsInstance.destroy(); } catch {} hlsInstance = null; }
-  if (mseState) {
-    if (mseState.initTimeout) { clearTimeout(mseState.initTimeout); mseState.initTimeout = null; }
-    try { mseState.ws && mseState.ws.close(); } catch {}
-    try {
-      if (mseState.mediaSource && mseState.mediaSource.readyState === 'open') {
-        mseState.mediaSource.endOfStream();
-      }
-    } catch {}
-    mseState = null;
-  }
   try {
     const blobUrl = video.src;
     video.pause();
@@ -965,12 +905,6 @@ function stopAllPlayers() {
     video.load();
     if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
   } catch {}
-}
-
-function startStream() {
-  if (activeMode === 'mse') activeMode = 'hls'; // safety guard — MSE disabled
-  if (activeMode === 'mse') startMseStream();
-  else startHlsStream();
 }
 
 function startHlsStream() {
@@ -1043,7 +977,7 @@ function startHlsStream() {
       showOverlay(isStartup ? 'Stream wird gestartet…' : `HLS-Fehler – Retry in ${delay/1000}s…`);
       log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}${isStartup ? ' (startup)' : ''}`, isStartup ? 'info' : 'err');
       hlsInstance.destroy(); hlsInstance = null;
-      setTimeout(() => { if (activeMode === 'hls') startHlsStream(); }, delay);
+      setTimeout(() => startHlsStream(), delay);
     });
 
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -1056,219 +990,15 @@ function startHlsStream() {
   }
 }
 
-// MSE (fMP4 over WebSocket) — low-latency video path.
-// Server sends: 1) JSON {type:"init",codecs:"…"} 2) init segment (binary)
-// 3) live fragments (binary, moof+mdat). MediaSource sequentially appends.
-function startMseStream() {
-  const video = document.getElementById('video');
-  const label = document.getElementById('stream-label');
-
-  if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported) {
-    log('MSE wird vom Browser nicht unterstützt – Fallback auf HLS', 'err');
-    setActiveMode('hls');
-    return;
-  }
-
-  showOverlay('Stream verbindet (MSE)…', true);
-
-  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${_pathBase}/mse-stream`;
-  const ws = new WebSocket(wsUrl);
-  ws.binaryType = 'arraybuffer';
-  const ms = new MediaSource();
-  video.src = URL.createObjectURL(ms);
-
-  const state = {
-    ws, mediaSource: ms, sourceBuffer: null, queue: [], retryCount: 0,
-    codecs: null, gotInit: false, waitLogged: false, initTimeout: null,
-  };
-  mseState = state;
-
-  const flushQueue = () => {
-    const sb = state.sourceBuffer;
-    if (!sb || sb.updating || state.queue.length === 0) return;
-    try { sb.appendBuffer(state.queue.shift()); }
-    catch (e) {
-      if (e.name === 'QuotaExceededError') {
-        // SourceBuffer full — drop oldest queued chunks and try again
-        state.queue = [];
-        log(`MSE Puffer voll – Queue zurückgesetzt`, 'err');
-      } else {
-        log(`MSE appendBuffer-Fehler: ${e.message}`, 'err');
-      }
-    }
-  };
-
-  // Safety-net: 30s for HEVC cameras (HEVC decode init takes longer than H.264).
-  state.initTimeout = setTimeout(() => {
-    if (!state.gotInit && activeMode === 'mse') {
-      log('MSE Init-Timeout (30s) – Fallback auf HLS', 'err');
-      setActiveMode('hls');
-    }
-  }, 30000);
-
-  ms.addEventListener('sourceopen', () => {
-    log('MSE MediaSource open – warte auf Codec-Info');
-  });
-
-  ws.addEventListener('open', () => {
-    log('MSE WebSocket verbunden');
-  });
-
-  ws.addEventListener('message', (ev) => {
-    if (typeof ev.data === 'string') {
-      // Control message (JSON)
-      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.type === 'init' && msg.codecs) {
-        if (state.initTimeout) { clearTimeout(state.initTimeout); state.initTimeout = null; }
-        if (state.gotInit) {
-          // Server pushed init again (e.g. reconnect path) — ignore second one
-          return;
-        }
-        state.codecs = msg.codecs;
-        const mime = `video/mp4; codecs="${msg.codecs}"`;
-        if (!MediaSource.isTypeSupported(mime)) {
-          log(`MSE Codec nicht unterstützt: ${mime} – Fallback HLS`, 'err');
-          setActiveMode('hls');
-          return;
-        }
-        const attach = () => {
-          try {
-            const sb = ms.addSourceBuffer(mime);
-            sb.mode = 'sequence'; // live stream: remap PTS to start at 0
-            sb.addEventListener('updateend', () => {
-              // First data: sync currentTime to buffered start (PTS may not begin at 0)
-              if (!state.started && video.buffered.length > 0) {
-                state.started = true;
-                const s = video.buffered.start(0);
-                if (video.currentTime < s) video.currentTime = s;
-                video.play().catch(() => {});
-              }
-              flushQueue();
-            });
-            sb.addEventListener('error', () => log(`MSE SourceBuffer-Fehler`, 'err'));
-            state.sourceBuffer = sb;
-            state.gotInit = true;
-            log(`MSE bereit (Codecs: ${msg.codecs})`, 'ok');
-            label.textContent = `Live · MSE`;
-            hideOverlay();
-            video.play().catch(() => {});
-            flushQueue();
-          } catch (e) {
-            log(`MSE addSourceBuffer-Fehler: ${e.message}`, 'err');
-            setActiveMode('hls');
-          }
-        };
-        if (ms.readyState === 'open') attach();
-        else ms.addEventListener('sourceopen', attach, { once: true });
-      } else if (msg.type === 'wait') {
-        if (!state.waitLogged) {
-          state.waitLogged = true;
-          log('MSE: warte auf Stream-Init…');
-        }
-      }
-    } else {
-      // Binary fragment
-      state.queue.push(new Uint8Array(ev.data));
-      // Cap queue (prevent memory blowup if SourceBuffer stalls)
-      if (state.queue.length > 200) state.queue.shift();
-      flushQueue();
-    }
-  });
-
-  ws.addEventListener('close', (ev) => {
-    if (activeMode !== 'mse') return;
-    // Stale check: mseState may have been replaced by a newer session
-    if (!mseState || mseState.ws !== ws) return;
-    state.retryCount++;
-    const delay = Math.min(2000 * state.retryCount, 20000);
-    log(`MSE WS geschlossen (${ev.code}) – Retry in ${delay/1000}s`, 'err');
-    showOverlay(`MSE getrennt – Retry in ${delay/1000}s…`, true);
-    mseState = null; // clear before retry so the staleness check in the new session works
-    setTimeout(() => { if (activeMode === 'mse' && !mseState) startMseStream(); }, delay);
-  });
-  ws.addEventListener('error', () => {
-    if (!mseState || mseState.ws !== ws) return;
-    log('MSE WS-Fehler', 'err');
-  });
-}
-
-// ── Mode switching ───────────────────────────────────────
-// Re-entrancy guard: keep clicks/tab-switches from racing each other.
-let modeSwitching = false;
-async function setActiveMode(mode) {
-  if (mode === 'mse') {
-    document.getElementById('mse-notice').classList.add('visible');
-    log('MSE ist deaktiviert – HLS wird verwendet', 'err');
-    return;
-  }
-  if (mode === activeMode) return;
-  if (modeSwitching) {
-    log('Mode-Wechsel läuft bereits – ignoriert');
-    return;
-  }
-  modeSwitching = true;
-  log(`Wechsle Stream-Modus: ${activeMode} → ${mode}`);
-  stopAllPlayers();
-  hlsRetryCount = 0;
-  if (mode === 'hls') hlsStartTime = Date.now();
-  try {
-    const res = await fetch('./api/video-mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      log(`Mode-Wechsel abgelehnt: ${data.error || res.status}`, 'err');
-      modeSwitching = false;
-      startStream();
-      return;
-    }
-    activeMode = data.mode;
-  } catch (e) {
-    log(`Mode-Wechsel-Fehler: ${e.message}`, 'err');
-    modeSwitching = false;
-    startStream();
-    return;
-  }
-  updateModeTabs();
-  // POST already returned only after the server's switchVideoMode resolved,
-  // so the new pipeline has started. Small grace period for ffmpeg to emit
-  // its first segment / init box.
-  setTimeout(() => { modeSwitching = false; startStream(); }, 500);
-}
-
-function updateModeTabs() {
-  document.querySelectorAll('.mode-tab').forEach((b) => {
-    b.classList.toggle('active', b.dataset.mode === activeMode);
-  });
-}
-
-async function initStreamMode() {
-  try {
-    const res = await fetch('./api/video-mode');
-    const data = await res.json();
-    activeMode = data.mode || 'hls';
-  } catch {
-    activeMode = 'hls';
-  }
-  // MSE is disabled: fall back to HLS regardless of server state
-  if (activeMode === 'mse') {
-    activeMode = 'hls';
-    document.getElementById('mse-notice').classList.add('visible');
-  }
-  updateModeTabs();
-  document.querySelectorAll('.mode-tab').forEach((b) => {
-    if (!b.disabled) b.addEventListener('click', () => setActiveMode(b.dataset.mode));
-  });
-}
-
 // Mute toggle
 let videoMuted = true;
 document.getElementById('mute-btn').addEventListener('click', () => {
   videoMuted = !videoMuted;
-  document.getElementById('video').muted = videoMuted;
-  document.getElementById('mute-btn').textContent = videoMuted ? '🔇 Ton ein' : '🔊 Ton aus';
+  const btn = document.getElementById('mute-btn');
+  const video = document.getElementById('video');
+  video.muted = videoMuted;
+  btn.innerHTML = videoMuted ? '🔇<br>Ton ein' : '🔊<br>Ton aus';
+  btn.classList.toggle('unmuted', !videoMuted);
 });
 
 // ── Settings ─────────────────────────────────────────────

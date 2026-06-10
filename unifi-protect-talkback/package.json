@@ -1,6 +1,6 @@
 {
   "name": "unifi-protect-talkback-ha",
-  "version": "1.7.5",
+  "version": "1.7.6",
   "description": "Home Assistant Add-on: Web interface, live view (HLS), talkback, ringtone control and display messages for UniFi Protect G4/G5 Doorbells.",
   "directories": {
     "doc": "docs"
