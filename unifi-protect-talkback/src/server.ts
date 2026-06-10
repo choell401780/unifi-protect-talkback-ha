@@ -426,10 +426,12 @@ class MseManager {
     }
     const args = [
       "-hide_banner", "-nostats",
-      "-fflags", "nobuffer+flush_packets", "-flags", "low_delay",
+      // +discardcorrupt: HEVC reference-frame errors at stream join are non-fatal
+      "-fflags", "nobuffer+flush_packets+discardcorrupt", "-flags", "low_delay",
       "-rtsp_transport", HLS_RTSP_TRANSPORT,
-      "-analyzeduration", HLS_ANALYZEDURATION,
-      "-probesize", HLS_PROBESIZE,
+      // HEVC needs longer probe window to lock onto reference frames before re-encode starts
+      "-analyzeduration", "5000000",
+      "-probesize", "5000000",
       "-i", this.rtspUrl,
       // Video re-encode: baseline H.264 (deterministic codec string for MSE)
       "-c:v", "libx264",

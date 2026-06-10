@@ -856,13 +856,13 @@ function startMseStream() {
     }
   };
 
-  // Safety-net: if no init arrives within 15s, fall back to HLS.
+  // Safety-net: 30s for HEVC cameras (HEVC decode init takes longer than H.264).
   state.initTimeout = setTimeout(() => {
     if (!state.gotInit && activeMode === 'mse') {
-      log('MSE Init-Timeout (15s) – Fallback auf HLS', 'err');
+      log('MSE Init-Timeout (30s) – Fallback auf HLS', 'err');
       setActiveMode('hls');
     }
-  }, 15000);
+  }, 30000);
 
   ms.addEventListener('sourceopen', () => {
     log('MSE MediaSource open – warte auf Codec-Info');
