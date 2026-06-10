@@ -3,8 +3,8 @@
 # Nur lesend — kein schreibender Zugriff auf HA.
 set -euo pipefail
 
-HA_HOST="hassio@192.168.188.6"
-SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+HA_HOST="root@192.168.188.6"
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ha_diagnose"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/../logs"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")

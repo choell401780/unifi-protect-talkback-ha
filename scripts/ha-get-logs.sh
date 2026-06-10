@@ -3,8 +3,8 @@
 # Nur lesend — kein schreibender Zugriff auf HA.
 set -euo pipefail
 
-HA_HOST="hassio@192.168.188.6"
-SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+HA_HOST="root@192.168.188.6"
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ha_diagnose"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/../logs"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -49,7 +49,7 @@ echo "  → ${TIMESTAMP}_host.log"
 
 # Add-on (unifi_protect_doorbell)
 echo "[ha-get-logs] Ziehe Add-on-Logs (unifi_protect_doorbell) …"
-ssh $SSH_OPTS "$HA_HOST" "ha addons logs unifi_protect_doorbell" \
+ssh $SSH_OPTS "$HA_HOST" "ha apps logs e9e5a5d8_unifi_protect_doorbell" \
   > "$LOG_DIR/${TIMESTAMP}_addon.log" 2>&1
 echo "  → ${TIMESTAMP}_addon.log"
 
