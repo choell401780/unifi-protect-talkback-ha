@@ -732,7 +732,13 @@ function stopAllPlayers() {
     } catch {}
     mseState = null;
   }
-  try { video.pause(); video.removeAttribute('src'); video.load(); } catch {}
+  try {
+    const blobUrl = video.src;
+    video.pause();
+    video.src = '';
+    video.load();
+    if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
+  } catch {}
 }
 
 function startStream() {
@@ -946,9 +952,8 @@ async function setActiveMode(mode) {
   }
   modeSwitching = true;
   log(`Wechsle Stream-Modus: ${activeMode} → ${mode}`);
-  // Tear down our players BEFORE telling the server — avoids transient
-  // segment/WS errors while the new ffmpeg is spawning.
   stopAllPlayers();
+  hlsRetryCount = 0;
   try {
     const res = await fetch('./api/video-mode', {
       method: 'POST',
@@ -959,12 +964,14 @@ async function setActiveMode(mode) {
     if (!res.ok) {
       log(`Mode-Wechsel abgelehnt: ${data.error || res.status}`, 'err');
       modeSwitching = false;
+      startStream();
       return;
     }
     activeMode = data.mode;
   } catch (e) {
     log(`Mode-Wechsel-Fehler: ${e.message}`, 'err');
     modeSwitching = false;
+    startStream();
     return;
   }
   updateModeTabs();

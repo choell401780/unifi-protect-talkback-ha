@@ -823,7 +823,14 @@ export function startServer(
   };
 
   const activateCamera = (): void => {
-    void loadCameraDetails().then(() => startVideoStream());
+    const cameraIdAtActivation = activeCameraId;
+    void loadCameraDetails().then(() => {
+      if (activeCameraId !== cameraIdAtActivation) {
+        console.log(`[stream] activateCamera() snapshot mismatch — camera changed while loading details, skipping start`);
+        return;
+      }
+      startVideoStream();
+    });
     void loadChimeData();
   };
 

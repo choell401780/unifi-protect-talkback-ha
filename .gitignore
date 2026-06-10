@@ -20,7 +20,7 @@ unifi-protect-talkback/dist/
 build/
 coverage/
 *.log
-logs/
+# logs/ wird weiter unten via logs/* + !logs/.gitkeep gehandhabt
 tmp/
 .cache/
 
@@ -38,3 +38,9 @@ Thumbs.db
 # ── Home Assistant Add-on runtime data ───────────────────────────────────
 /data/
 data/options.json
+
+# Diagnose-Logs (lokal, niemals pushen)
+logs/*
+!logs/.gitkeep
+*.token
+secrets.yaml

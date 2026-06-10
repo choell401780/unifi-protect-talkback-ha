@@ -178,6 +178,58 @@ Talkback erfordert einen sicheren Kontext im Browser. Optionen:
 
 Die vollständige Add-on-Dokumentation (Konfigurationsfelder, Troubleshooting) findet sich in [`DOCS.md`](DOCS.md).
 
+## SSH-Diagnose (Home Assistant)
+
+Das Projekt enthält Diagnose-Skripte, die sich per SSH lesend auf Home Assistant verbinden und Logs lokal speichern.
+
+### SSH-Key autorisieren
+
+**Einmalige Einrichtung in Home Assistant:**
+
+1. **HA → Einstellungen → Add-ons → SSH & Web Terminal → Konfiguration**
+2. Unter `authorized_keys` den folgenden Key eintragen:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJRbu6TCleeQ0ShbluWyy7vm27FFKuW4ayJIAmWduaLn claude-homeassistant
+```
+
+3. Add-on **Speichern** und **Neu starten**
+
+> Alternativ in der WSL-Umgebung per `cat ~/.ssh/id_ed25519.pub` anzeigen.
+
+### Verbindung testen
+
+```bash
+ssh hassio@192.168.188.6
+```
+
+### Diagnose-Skripte
+
+```bash
+# Alle Logs ziehen (Core, Supervisor, Host, Add-on)
+bash scripts/ha-get-logs.sh
+
+# Konfigurationsprüfung
+bash scripts/ha-check-config.sh
+
+# Vollständige Diagnose inkl. Fehler-Filter
+bash scripts/ha-diagnose.sh
+```
+
+Logs werden mit Zeitstempel in `logs/` gespeichert (`logs/*.log`, niemals commitet).
+
+### Erlaubte Diagnose-Befehle (nur lesend)
+
+| Befehl | Beschreibung |
+|--------|-------------|
+| `ha core logs` | Home Assistant Core Logs |
+| `ha supervisor logs` | Supervisor Logs |
+| `ha host logs` | Host-System Logs |
+| `ha addons logs <slug>` | Add-on Logs |
+| `ha core check` | Konfigurationsprüfung |
+
+> Schreibende Befehle (`restart`, `stop`, `uninstall`, Konfigurationsänderungen) sind **nicht** in den Skripten enthalten und werden nur auf ausdrückliche Anforderung ausgeführt.
+
 ## Sicherheits-Hinweise
 
 - **Standardmäßig wird nur Home Assistant Ingress verwendet** — der Zugriff geht durch HA-Authentifizierung. Eine Veröffentlichung des direkten Port `8080` über das Netzwerk (in der Add-on-„Netzwerk"-Lasche) **deaktiviert diese Authentifizierung**. Nur aktivieren, wenn der Server in einem vertrauenswürdigen LAN steht.
