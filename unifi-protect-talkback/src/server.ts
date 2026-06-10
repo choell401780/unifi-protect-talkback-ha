@@ -276,7 +276,7 @@ class HlsManager {
       ...(HLS_LL ? [
         "-hls_segment_type", "fmp4",
         "-hls_fmp4_init_filename", "init.mp4",
-        "-hls_flags", "delete_segments+temp_file+independent_segments+low_latency",
+        "-hls_flags", "delete_segments+temp_file+independent_segments",
       ] : [
         "-hls_flags", "delete_segments+temp_file+independent_segments",
       ]),
@@ -293,7 +293,7 @@ class HlsManager {
       : "copy (no re-encode, GOP follows source)";
     console.log(`[hls] mode: ${encoderLabel}`);
     console.log(`[hls] segments: type=${HLS_LL ? "fMP4 (LL-HLS)" : "MPEG-TS"} time=${HLS_TIME}s list=${HLS_LIST_SIZE} → ~${targetLatency}s window`);
-    console.log(`[hls] latency strategy: ${HLS_LL ? "LL-HLS (fMP4, low_latency, sub-1s GOP) → target ~1–2 s" : HLS_REENCODE ? "low (1 s GOP, TS segments) → ~2–3 s" : "stable (copy, GOP follows camera ~5 s) → ~10 s"}`);
+    console.log(`[hls] latency strategy: ${HLS_LL ? "short-segment fMP4 (0.5 s GOP, fMP4 segments) → target ~1–2 s" : HLS_REENCODE ? "low (1 s GOP, TS segments) → ~2–3 s" : "stable (copy, GOP follows camera ~5 s) → ~10 s"}`);
 
     this._startedAt = Date.now();
     this.proc = spawn("ffmpeg", args);
