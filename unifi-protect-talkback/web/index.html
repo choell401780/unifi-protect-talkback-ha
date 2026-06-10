@@ -554,6 +554,7 @@
     .slider-adj:active { background: #383838; }
 
     /* ── Tablet mode (body.tablet) ───────────────────────── */
+    html.tablet,
     body.tablet { font-size: 28px; }
 
     body.tablet header { padding: 0.75rem 1rem; }
@@ -1719,6 +1720,7 @@ let tabletMode = false;
 
 function applyTabletMode(on) {
   tabletMode = on;
+  document.documentElement.classList.toggle('tablet', on); // html.tablet setzt rem-Basis
   document.body.classList.toggle('tablet', on);
   const btn = document.getElementById('tablet-toggle');
   if (btn) btn.classList.toggle('active', on);
