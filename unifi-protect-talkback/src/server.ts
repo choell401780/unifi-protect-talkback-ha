@@ -1187,10 +1187,15 @@ export function startServer(
 
     if (url === "/api/video-mode" && method === "POST") {
       const body = await parseBody(req);
-      const target = String(body["mode"] ?? "").toLowerCase();
+      let target = String(body["mode"] ?? "").toLowerCase();
       if (!VALID_MODES.has(target as VideoMode)) {
         json(res, { error: `invalid mode (expected hls|mse), got: ${target}` }, 400);
         return;
+      }
+      // MSE is disabled — silently redirect to HLS
+      if (target === "mse") {
+        console.log("[stream] POST /api/video-mode mse → rejected, MSE disabled, using hls");
+        target = "hls";
       }
       await switchVideoMode(target as VideoMode);
       json(res, { ok: true, mode: videoMode });

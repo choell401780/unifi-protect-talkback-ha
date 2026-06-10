@@ -151,13 +151,30 @@
       text-align: center;
       transition: all 0.15s;
     }
-    .mode-tab:hover { border-color: var(--blue); }
+    .mode-tab:not(:disabled):hover { border-color: var(--blue); }
     .mode-tab.active {
       background: var(--blue);
       color: #fff;
       border-color: var(--blue);
     }
+    .mode-tab:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+      border-color: #333;
+    }
     .mode-tab .tab-hint { display: block; font-size: 0.65rem; opacity: 0.7; margin-top: 0.1rem; }
+
+    #mse-notice {
+      font-size: 0.7rem;
+      color: var(--muted);
+      padding: 0.25rem 0.5rem;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      margin-bottom: 0.35rem;
+      display: none;
+    }
+    #mse-notice.visible { display: block; }
 
     #mute-btn {
       background: none;
@@ -716,8 +733,9 @@
     <div class="card-title">Kamerabild · Live</div>
     <div class="mode-tabs" id="mode-tabs">
       <button class="mode-tab" data-mode="hls">HLS<span class="tab-hint">stabil ~10 s</span></button>
-      <button class="mode-tab" data-mode="mse">MSE<span class="tab-hint">low-latency ~1–2 s</span></button>
+      <button class="mode-tab" data-mode="mse" disabled title="MSE ist experimentell und derzeit deaktiviert">MSE<span class="tab-hint">deaktiviert</span></button>
     </div>
+    <div id="mse-notice">⚠ MSE ist aktuell deaktiviert. HLS wird verwendet.</div>
     <div class="video-wrap">
       <video id="video" autoplay muted playsinline></video>
       <div class="video-overlay" id="stream-overlay">
@@ -950,6 +968,7 @@ function stopAllPlayers() {
 }
 
 function startStream() {
+  if (activeMode === 'mse') activeMode = 'hls'; // safety guard — MSE disabled
   if (activeMode === 'mse') startMseStream();
   else startHlsStream();
 }
@@ -1103,8 +1122,17 @@ function startMseStream() {
         const attach = () => {
           try {
             const sb = ms.addSourceBuffer(mime);
-            sb.mode = 'segments';
-            sb.addEventListener('updateend', flushQueue);
+            sb.mode = 'sequence'; // live stream: remap PTS to start at 0
+            sb.addEventListener('updateend', () => {
+              // First data: sync currentTime to buffered start (PTS may not begin at 0)
+              if (!state.started && video.buffered.length > 0) {
+                state.started = true;
+                const s = video.buffered.start(0);
+                if (video.currentTime < s) video.currentTime = s;
+                video.play().catch(() => {});
+              }
+              flushQueue();
+            });
             sb.addEventListener('error', () => log(`MSE SourceBuffer-Fehler`, 'err'));
             state.sourceBuffer = sb;
             state.gotInit = true;
@@ -1156,6 +1184,11 @@ function startMseStream() {
 // Re-entrancy guard: keep clicks/tab-switches from racing each other.
 let modeSwitching = false;
 async function setActiveMode(mode) {
+  if (mode === 'mse') {
+    document.getElementById('mse-notice').classList.add('visible');
+    log('MSE ist deaktiviert – HLS wird verwendet', 'err');
+    return;
+  }
   if (mode === activeMode) return;
   if (modeSwitching) {
     log('Mode-Wechsel läuft bereits – ignoriert');
@@ -1207,9 +1240,14 @@ async function initStreamMode() {
   } catch {
     activeMode = 'hls';
   }
+  // MSE is disabled: fall back to HLS regardless of server state
+  if (activeMode === 'mse') {
+    activeMode = 'hls';
+    document.getElementById('mse-notice').classList.add('visible');
+  }
   updateModeTabs();
   document.querySelectorAll('.mode-tab').forEach((b) => {
-    b.addEventListener('click', () => setActiveMode(b.dataset.mode));
+    if (!b.disabled) b.addEventListener('click', () => setActiveMode(b.dataset.mode));
   });
 }
 
