@@ -105,14 +105,25 @@ Das Add-on verwendet **HLS** als stabilen Videomodus.
 
 | Modus | Latenz | Audio | CPU | Status |
 |---|---|---|---|---|
-| **HLS** (Default) | ~10 s (copy) / ~2–3 s (mit `hls_reencode`) | ✅ | minimal / hoch | ✅ stabil |
+| **HLS Standard** (`hls_reencode: false`) | ~10–12 s | ✅ | minimal | ✅ stabil, Default |
+| **HLS LL-HLS** (`hls_reencode: true`) | ~1–2 s | ✅ | hoch | ✅ stabil, empfohlen für leistungsstarke Hardware |
 | **MSE** | ~1–2 s | ✅ | hoch | ⚠ experimentell, derzeit deaktiviert |
 
-### HLS (stabiler Modus)
+### HLS Standard (Default)
 
-HLS ist der empfohlene und einzige aktive Videomodus. Das Add-on nutzt
-`hls.js` und eine ffmpeg-Pipeline — kompatibel mit allen Browsern,
-zuverlässig hinter Home Assistant Ingress.
+Kopiert das RTSP-Video unverändert — minimal CPU, stabil auf jeder Hardware.
+Latenz ~10–12 s (abhängig vom GOP der Kamera, typisch ~5 s).
+
+### LL-HLS — Low-Latency HLS (`hls_reencode: true`)
+
+Mit aktiviertem Re-Encoding erzwingt ffmpeg 0,5-Sekunden-Keyframes und erzeugt
+**fMP4-Segmente** (Fragmented MP4) mit dem `low_latency`-Flag. hls.js erkennt
+den LL-HLS-Modus automatisch anhand der Playlist-Header (`EXT-X-PART-INF`).
+
+- Latenz: **~1–2 s** (hls.js liveSyncDuration: 1 s)
+- Segment-Typ: fMP4 (`.m4s`), Init-Segment `init.mp4`
+- Browser: alle modernen Browser; Safari ab iOS 15.4
+- Im UI erscheint das Label **„LL-HLS"** statt „HLS" wenn der Modus aktiv ist
 
 ### MSE (experimentell — derzeit deaktiviert)
 
@@ -123,23 +134,23 @@ Als Zukunftspfad für niedrige Latenz (~1 s) wird **WebRTC / go2rtc** geprüft.
 > **Im UI ist MSE ausgegraut** — bei gespeichertem Modus `mse` im Browser
 > wird automatisch auf HLS zurückgeschaltet.
 
-## Live-Latenz optimieren (Re-Encoding)
+## Live-Latenz optimieren (Re-Encoding / LL-HLS)
 
 UniFi G4/G5 Doorbells senden Keyframes typischerweise nur alle ~5 Sekunden.
 Der Standard-Pfad **(`hls_reencode: false`)** kopiert das Video unverändert und
 ist damit auf jeder Hardware stabil — die Live-Latenz liegt jedoch bei ~10–12 s.
 
-Mit aktiviertem Re-Encoding **(`hls_reencode: true`)** transkodiert ffmpeg den
-Videostream und erzwingt ein 1-Sekunden-Keyframe-Intervall. Damit sinkt die
-Latenz auf **~2–3 Sekunden**.
+Mit **`hls_reencode: true`** schaltet das Add-on automatisch in den **LL-HLS-Modus**:
+ffmpeg re-encodiert auf 0,5-Sekunden-Segmente (fMP4) mit erzwungenen Sub-Sekunden-Keyframes.
+hls.js empfängt Partial Segments noch während des Schreibens — Latenz **~1–2 s**.
 
 ### Trade-off
 
 | Modus | Latenz | CPU | Empfohlen für |
 |---|---|---|---|
 | `hls_reencode: false` (Default) | ~10–12 s | minimal | RPi 3/4, schwache NAS, alles |
-| `hls_reencode: true` (Software) | ~2–3 s | hoch (≈1 Kern @ 1600×1200) | RPi 5, Intel NUC, x86-Server |
-| `hls_reencode: true` + `hls_hwaccel` | ~2–3 s | gering | Hosts mit GPU/iGPU |
+| `hls_reencode: true` (LL-HLS, Software) | **~1–2 s** | hoch (≈1 Kern @ 1600×1200) | RPi 5, Intel NUC, x86-Server |
+| `hls_reencode: true` + `hls_hwaccel` | **~1–2 s** | gering | Hosts mit GPU/iGPU |
 
 ### Empfohlene Hardware (Software-Encoding)
 

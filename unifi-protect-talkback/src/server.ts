@@ -116,10 +116,12 @@ function json(res: http.ServerResponse, data: unknown, status = 200): void {
 }
 
 // Low-latency HLS knobs — overridable via env for differing camera GOP / hardware.
-// Defaults chosen conservatively: stable on G4/G5 doorbells while still cutting
-// several seconds off vs. ffmpeg defaults.
-const HLS_TIME = process.env["HLS_TIME"] ?? "1";              // target segment duration (s)
-const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? "3";    // playlist window (segments)
+// LL-HLS (low_latency flag + fMP4) requires re-encode to guarantee sub-second GOPs.
+// Without re-encode the camera's GOP (~5 s) makes LL-HLS pointless, so LL is only
+// activated when HLS_REENCODE is set.
+const HLS_LL = HLS_REENCODE; // true → LL-HLS (fMP4, 0.5 s segments, low_latency)
+const HLS_TIME = process.env["HLS_TIME"] ?? (HLS_LL ? "0.5" : "1");
+const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "6" : "3"); // 6×0.5 s = 3 s window
 const HLS_ANALYZEDURATION = process.env["HLS_ANALYZEDURATION"] ?? "1000000"; // 1s
 const HLS_PROBESIZE = process.env["HLS_PROBESIZE"] ?? "500000";              // 500KB
 const HLS_RTSP_TRANSPORT = process.env["HLS_RTSP_TRANSPORT"] ?? "tcp";       // tcp = stable
@@ -247,7 +249,8 @@ class HlsManager {
     HlsManager.cleanupDir(this.hlsDir);
 
     const m3u8 = path.join(this.hlsDir, "stream.m3u8");
-    const segPattern = path.join(this.hlsDir, "seg%03d.ts");
+    const segExt = HLS_LL ? "m4s" : "ts";
+    const segPattern = path.join(this.hlsDir, `seg%03d.${segExt}`);
 
     const { inputFlags, videoArgs } = buildEncoderArgs();
 
@@ -269,7 +272,13 @@ class HlsManager {
       "-f", "hls",
       "-hls_time", HLS_TIME,
       "-hls_list_size", HLS_LIST_SIZE,
-      "-hls_flags", "delete_segments+temp_file+independent_segments",
+      ...(HLS_LL ? [
+        "-hls_segment_type", "fmp4",
+        "-hls_fmp4_init_filename", "init.mp4",
+        "-hls_flags", "delete_segments+temp_file+independent_segments+low_latency",
+      ] : [
+        "-hls_flags", "delete_segments+temp_file+independent_segments",
+      ]),
       "-hls_segment_filename", segPattern,
       "-y", m3u8,
     ];
@@ -282,8 +291,8 @@ class HlsManager {
       ? `re-encode (codec=${hwaccel === "none" ? "libx264" : `h264_${hwaccel}`}, preset=${HLS_PRESET}, bitrate=${HLS_VIDEO_BITRATE}, hwaccel=${hwaccel}, gop=${HLS_TIME}s)`
       : "copy (no re-encode, GOP follows source)";
     console.log(`[hls] mode: ${encoderLabel}`);
-    console.log(`[hls] segments: hls_time=${HLS_TIME}s list=${HLS_LIST_SIZE} → ~${targetLatency}s playlist window`);
-    console.log(`[hls] latency strategy: ${HLS_REENCODE ? "low (forced 1s GOP)" : "stable (copy, depends on camera GOP)"}`);
+    console.log(`[hls] segments: type=${HLS_LL ? "fMP4 (LL-HLS)" : "MPEG-TS"} time=${HLS_TIME}s list=${HLS_LIST_SIZE} → ~${targetLatency}s window`);
+    console.log(`[hls] latency strategy: ${HLS_LL ? "LL-HLS (fMP4, low_latency, sub-1s GOP) → target ~1–2 s" : HLS_REENCODE ? "low (1 s GOP, TS segments) → ~2–3 s" : "stable (copy, GOP follows camera ~5 s) → ~10 s"}`);
 
     this._startedAt = Date.now();
     this.proc = spawn("ffmpeg", args);
@@ -296,10 +305,13 @@ class HlsManager {
         console.error("[hls]", line);
         this._error = line;
       }
-      if (line.includes("m3u8") && line.includes("Opening")) {
+      if (line.includes("Opening") && line.includes("init.mp4")) {
+        console.log(`[hls] LL-HLS init segment written (fMP4 ready)`);
+      }
+      if (line.includes("Opening") && line.includes("m3u8")) {
         if (!this._ready) {
           const startupMs = Date.now() - this._startedAt;
-          console.log(`[hls] first playlist ready after ${startupMs}ms`);
+          console.log(`[hls] first playlist ready after ${startupMs}ms${HLS_LL ? " [LL-HLS]" : ""}`);
         }
         this._ready = true;
         this._error = null;
@@ -357,7 +369,7 @@ class HlsManager {
       const files = fs.readdirSync(dir);
       let removed = 0;
       for (const f of files) {
-        if (f.endsWith(".ts") || f.endsWith(".m3u8") || f.endsWith(".tmp") || f.endsWith(".m3u8.tmp")) {
+        if (f.endsWith(".ts") || f.endsWith(".m4s") || f.endsWith(".mp4") || f.endsWith(".m3u8") || f.endsWith(".tmp") || f.endsWith(".m3u8.tmp")) {
           try { fs.unlinkSync(path.join(dir, f)); removed++; } catch { /* race ok */ }
         }
       }

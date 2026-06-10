@@ -993,10 +993,11 @@ function startHlsStream() {
       debug: false,
       enableWorker: true,
       lowLatencyMode: true,
-      liveSyncDurationCount: 2,
-      liveMaxLatencyDurationCount: 5,
-      maxBufferLength: 6,
-      backBufferLength: 2,
+      liveSyncDuration: 1,           // target: 1 s behind live edge
+      liveMaxLatencyDuration: 4,     // catch-up above 4 s delay
+      maxBufferLength: 4,
+      backBufferLength: 1,
+      maxFragLookUpTolerance: 0.1,
     });
 
     hlsInstance.loadSource('./hls/stream.m3u8');
@@ -1007,8 +1008,18 @@ function startHlsStream() {
       hlsRetryCount = 0;
       const lvl = hlsInstance.levels[hlsInstance.currentLevel];
       label.textContent = lvl ? `${lvl.width}×${lvl.height} · HLS` : 'Live · HLS';
-      log('Stream bereit (HLS, low-latency)', 'ok');
+      log('Stream bereit (HLS)', 'ok');
       video.play().catch(() => {});
+    });
+
+    // Detect LL-HLS: playlist contains EXT-X-PART-INF (partHoldBack > 0)
+    hlsInstance.once(Hls.Events.LEVEL_LOADED, (_, data) => {
+      if (data.details && data.details.partHoldBack > 0) {
+        const lvl = hlsInstance.levels[hlsInstance.currentLevel];
+        const res = lvl ? `${lvl.width}×${lvl.height}` : 'Live';
+        label.textContent = `${res} · LL-HLS`;
+        log('LL-HLS erkannt (fMP4, Partial Segments aktiv)', 'ok');
+      }
     });
 
     let lastReportedLatency = null;
@@ -1017,7 +1028,8 @@ function startHlsStream() {
       if (typeof lat !== 'number' || !isFinite(lat)) return;
       if (lastReportedLatency === null || Math.abs(lat - lastReportedLatency) > 0.5) {
         lastReportedLatency = lat;
-        log(`Live-Latenz ~${lat.toFixed(1)}s (HLS)`);
+        const mode = label.textContent && label.textContent.includes('LL-HLS') ? 'LL-HLS' : 'HLS';
+        log(`Live-Latenz ~${lat.toFixed(1)}s (${mode})`);
       }
     });
 
