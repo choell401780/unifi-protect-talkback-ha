@@ -399,6 +399,12 @@ class MseManager {
   // start decoding immediately instead of waiting for the next keyframe.
   private lastKeyframeFragment: Buffer | null = null;
 
+  // HEVC warmup: suppress fragment delivery until the decoder has locked onto
+  // its first IDR. lastHevcErrorMs=0 means "no HEVC errors seen" (H.264 camera)
+  // → hevcClean() returns true immediately → warmup completes on first fragment.
+  private lastHevcErrorMs = 0;
+  private hevcWarmupDone = false;
+
   private subscribers = new Set<WebSocket>();
   // Tracks which subscribers have already received the init segment, so a
   // late-arriving moov box only goes out once per client.
@@ -426,12 +432,13 @@ class MseManager {
     }
     const args = [
       "-hide_banner", "-nostats",
-      // +discardcorrupt: HEVC reference-frame errors at stream join are non-fatal
-      "-fflags", "nobuffer+flush_packets+discardcorrupt", "-flags", "low_delay",
+      "-fflags", "nobuffer+flush_packets", "-flags", "low_delay",
       "-rtsp_transport", HLS_RTSP_TRANSPORT,
-      // HEVC needs longer probe window to lock onto reference frames before re-encode starts
+      // HEVC needs longer probe window; err_detect tells the decoder to keep
+      // going on reference-frame errors instead of marking frames as corrupt.
       "-analyzeduration", "5000000",
       "-probesize", "5000000",
+      "-err_detect", "ignore_err",
       "-i", this.rtspUrl,
       // Video re-encode: baseline H.264 (deterministic codec string for MSE)
       "-c:v", "libx264",
@@ -469,6 +476,10 @@ class MseManager {
     this.proc.stdout?.on("data", (chunk: Buffer) => this.consume(chunk));
     this.proc.stderr?.on("data", (d: Buffer) => {
       const line = d.toString().trim();
+      // Track HEVC decoder sync errors — used by hevcClean() to gate fragment delivery
+      if (/Could not find ref|frame RPS|undecodable NALU|First slice in a frame/i.test(line)) {
+        this.lastHevcErrorMs = Date.now();
+      }
       if (/error|failed|invalid/i.test(line) && !/size=|time=/i.test(line)) {
         console.error("[mse]", line);
         this._error = line;
@@ -519,6 +530,8 @@ class MseManager {
     this.codecString = null;
     this.fragBuf = [];
     this.lastKeyframeFragment = null;
+    this.hevcWarmupDone = false;
+    this.lastHevcErrorMs = 0;
     const n = this.subscribers.size;
     for (const ws of this.subscribers) {
       try { ws.close(1000, "stream stopped"); } catch { /* ignore */ }
@@ -532,6 +545,15 @@ class MseManager {
   getError(): string | null { return this._error; }
   getCodec(): string | null { return this.codecString; }
   subscriberCount(): number { return this.subscribers.size; }
+
+  // True once the HEVC decoder has been error-free long enough for the H.264
+  // encoder to have flushed its dirty reference frames via a forced IDR.
+  // lastHevcErrorMs=0 (no errors ever) → always true (H.264 camera, no warmup).
+  private hevcClean(): boolean {
+    if (this.lastHevcErrorMs === 0) return true;
+    const gopMs = parseInt(HLS_TIME, 10) * 1000 + 500; // 1 GOP + 500ms buffer
+    return Date.now() - this.lastHevcErrorMs > gopMs;
+  }
 
   // ── MP4 box scanner ────────────────────────────────────────────────────────
   // Reads top-level ISO-BMFF boxes from the ffmpeg stdout stream.
@@ -568,13 +590,18 @@ class MseManager {
       this.codecString = this.parseCodecFromMoov(box) ?? 'avc1.42E01F,mp4a.40.2';
       this._ready = true;
       console.log(`[mse] init segment ready (${this.initSegment.length}B, codecs=${this.codecString})`);
-      // Push init to any subscribers that connected before it was ready.
-      // Without this, clients stay stuck on "warte auf Stream-Init…".
-      let pushed = 0;
-      for (const ws of this.subscribers) {
-        if (!this.subscriberInitSent.has(ws) && this.sendInitTo(ws)) pushed++;
+      // Defer pushing to subscribers until HEVC warmup completes (flushFragment
+      // handles the push once hevcClean() returns true). For H.264 cameras the
+      // warmup flag is already set on the first fragment, so this is a no-op.
+      if (this.hevcWarmupDone) {
+        let pushed = 0;
+        for (const ws of this.subscribers) {
+          if (!this.subscriberInitSent.has(ws) && this.sendInitTo(ws)) pushed++;
+        }
+        if (pushed > 0) console.log(`[mse] pushed init to ${pushed} waiting subscriber(s)`);
+      } else {
+        console.log(`[mse] init ready — deferring push until HEVC warmup complete`);
       }
-      if (pushed > 0) console.log(`[mse] pushed init to ${pushed} waiting subscriber(s)`);
       return;
     }
     if (type === "moof") {
@@ -602,12 +629,23 @@ class MseManager {
     const fragment = Buffer.concat(this.fragBuf);
     this.fragBuf = [];
 
-    // Heuristic: a fragment whose moof contains the SampleFlags pattern of an
-    // I-frame is treated as a keyframe boundary. We can't cheaply detect this
-    // here, so we approximate: if no prior keyframe fragment is cached, use
-    // the first fragment we see. Subsequent fragments overwrite the cache
-    // only when a new top-level moof arrives via re-keying (every HLS_TIME s).
-    if (!this.lastKeyframeFragment) {
+    if (!this.hevcWarmupDone) {
+      if (!this.hevcClean()) return; // HEVC still syncing — discard fragment
+      // Warmup complete: HEVC has been error-free for 1 GOP, H.264 IDR flushed.
+      this.hevcWarmupDone = true;
+      const lag = this.lastHevcErrorMs > 0
+        ? `${((Date.now() - this.lastHevcErrorMs) / 1000).toFixed(1)}s after last HEVC error`
+        : `immediately (no HEVC errors)`;
+      console.log(`[mse] HEVC warmup complete (${lag}) — sending init to waiting subscribers`);
+      // Push init to all waiting subscribers (no fragment yet — avoids double-send below)
+      let pushed = 0;
+      for (const ws of this.subscribers) {
+        if (!this.subscriberInitSent.has(ws) && this.sendInitTo(ws)) pushed++;
+      }
+      if (pushed > 0) console.log(`[mse] pushed init to ${pushed} subscriber(s)`);
+      // Cache first clean fragment for late subscribers
+      this.lastKeyframeFragment = fragment;
+    } else if (!this.lastKeyframeFragment) {
       this.lastKeyframeFragment = fragment;
     }
 
@@ -672,7 +710,7 @@ class MseManager {
       console.log(`[mse] subscriber error: ${e.message} (remaining=${this.subscribers.size})`);
     });
 
-    if (this.initSegment && this.codecString) {
+    if (this.initSegment && this.codecString && this.hevcWarmupDone) {
       this.sendInitTo(ws);
     } else {
       try { ws.send(JSON.stringify({ type: "wait" })); } catch { /* ignore */ }

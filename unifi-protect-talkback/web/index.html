@@ -574,6 +574,7 @@ let cfg = { timesliceMs: 500 };
 let speakerTimer = null, micTimer = null;
 let hlsInstance = null;
 let hlsRetryCount = 0;
+let hlsStartTime = 0;  // ms timestamp when HLS mode was last activated
 let mseState = null;            // { ws, mediaSource, sourceBuffer, queue, retryCount }
 let activeMode = 'hls';         // 'hls' | 'mse'
 let currentPreview = null;
@@ -756,6 +757,7 @@ function startHlsStream() {
     return;
   }
 
+  if (hlsStartTime === 0) hlsStartTime = Date.now(); // initial page load
   showOverlay('Stream verbindet (HLS)…', true);
 
   if (Hls.isSupported()) {
@@ -798,8 +800,10 @@ function startHlsStream() {
       label.textContent = '';
       hlsRetryCount++;
       const delay = Math.min(5000 * hlsRetryCount, 30000);
-      showOverlay(`HLS-Fehler – Retry in ${delay/1000}s…`);
-      log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}`, 'err');
+      // Within 20s of HLS activation: camera is likely still producing its first segment.
+      const isStartup = hlsStartTime > 0 && (Date.now() - hlsStartTime) < 20000;
+      showOverlay(isStartup ? 'Stream wird gestartet…' : `HLS-Fehler – Retry in ${delay/1000}s…`);
+      log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}${isStartup ? ' (startup)' : ''}`, isStartup ? 'info' : 'err');
       hlsInstance.destroy(); hlsInstance = null;
       setTimeout(() => { if (activeMode === 'hls') startHlsStream(); }, delay);
     });
@@ -954,6 +958,7 @@ async function setActiveMode(mode) {
   log(`Wechsle Stream-Modus: ${activeMode} → ${mode}`);
   stopAllPlayers();
   hlsRetryCount = 0;
+  if (mode === 'hls') hlsStartTime = Date.now();
   try {
     const res = await fetch('./api/video-mode', {
       method: 'POST',
