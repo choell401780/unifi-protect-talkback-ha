@@ -585,8 +585,8 @@ class MseManager {
             const tt = moof.subarray(toff + 4, toff + 8).toString("ascii");
 
             if (tt === "tfhd" && toff + 16 <= moof.length) {
-              // version(1)+flags(3)+track_id(4) = 8 bytes after box header
-              const fl = ((moof[toff + 8]! << 16) | (moof[toff + 9]! << 8) | moof[toff + 10]!) >>> 0;
+              // FullBox: size(4)+type(4)+version(1)+flags(3). Flags are at toff+9..11, NOT toff+8 (version).
+              const fl = ((moof[toff + 9]! << 16) | (moof[toff + 10]! << 8) | moof[toff + 11]!) >>> 0;
               if (fl & 0x000020) { // default_sample_flags present
                 let foff = toff + 16;
                 if (fl & 0x000001) foff += 8; // base_data_offset
@@ -598,7 +598,7 @@ class MseManager {
             }
 
             if (tt === "trun" && toff + 16 <= moof.length) {
-              const fl = ((moof[toff + 8]! << 16) | (moof[toff + 9]! << 8) | moof[toff + 10]!) >>> 0;
+              const fl = ((moof[toff + 9]! << 16) | (moof[toff + 10]! << 8) | moof[toff + 11]!) >>> 0;
               if (fl & 0x000004) { // first_sample_flags present
                 let foff = toff + 16; // after version+flags+sample_count
                 if (fl & 0x000001) foff += 4; // data_offset
@@ -713,12 +713,14 @@ class MseManager {
         : `immediately (no HEVC errors)`;
       const reason = isKf ? "first clean IDR fragment" : "5 s timeout (IDR detection fallback)";
       console.log(`[mse] HEVC warmup complete (${lag}, ${reason}) — sending init to subscribers`);
-      this.lastKeyframeFragment = fragment;
+      // sendInitTo sends init+moov only (lastKeyframeFragment is null here).
+      // The IDR fragment follows via the loop below — no double-send.
       let pushed = 0;
       for (const ws of this.subscribers) {
         if (!this.subscriberInitSent.has(ws) && this.sendInitTo(ws)) pushed++;
       }
       if (pushed > 0) console.log(`[mse] pushed init to ${pushed} subscriber(s)`);
+      this.lastKeyframeFragment = fragment; // set after sendInitTo to avoid double-send
       // Fall through — send the IDR fragment to all subscribers below
     } else if (this.isKeyframeFragment(fragment)) {
       this.lastKeyframeFragment = fragment; // keep fresh for late subscribers
