@@ -989,6 +989,23 @@ export function startServer(
       return;
     }
 
+    // ── Integration helpers ───────────────────────────────────────────────────
+
+    if (url === "/api/stream/restart" && method === "POST") {
+      if (!activeCameraId) { json(res, { error: "No camera selected" }, 503); return; }
+      console.log(`[server] stream restart requested via /api/stream/restart`);
+      await stopVideoStream();
+      await new Promise<void>((r) => setTimeout(r, 500));
+      startVideoStream();
+      json(res, { ok: true });
+      return;
+    }
+
+    if (url === "/api/version" && method === "GET") {
+      json(res, { version: "1.8.0" });
+      return;
+    }
+
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     if (url === "/api/debug/devices" && method === "GET") {

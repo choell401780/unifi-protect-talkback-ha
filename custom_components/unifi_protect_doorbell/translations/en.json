@@ -1,0 +1,64 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "UniFi Protect Doorbell",
+        "description": "Connect to the UniFi Protect Doorbell add-on. The add-on must be running and the port must be accessible.",
+        "data": {
+          "addon_url": "Add-on URL",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "addon_url": "Base URL of the add-on, e.g. http://localhost:8080",
+          "verify_ssl": "Disable for self-signed certificates"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the add-on. Check the URL and ensure the add-on is running.",
+      "unknown": "Unexpected error — check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This add-on URL is already configured."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "nvr_connected": { "name": "NVR Connected" },
+      "stream_active": { "name": "Stream Active" }
+    },
+    "button": {
+      "clear_display_message": { "name": "Clear Display Message" },
+      "restart_stream": { "name": "Restart Stream" }
+    },
+    "camera": {
+      "live": { "name": "Live" }
+    },
+    "number": {
+      "speaker_volume": { "name": "Speaker Volume" },
+      "mic_volume": { "name": "Microphone Sensitivity" },
+      "ring_volume": { "name": "Ring Volume (internal)" },
+      "chime_volume": { "name": "Chime Volume" }
+    },
+    "select": {
+      "ringtone": { "name": "Ringtone" }
+    },
+    "sensor": {
+      "stream_status": {
+        "name": "Stream Status",
+        "state": {
+          "ready": "Ready",
+          "starting": "Starting",
+          "error": "Error"
+        }
+      },
+      "stream_restart_count": { "name": "Stream Restarts" },
+      "last_segment_age": { "name": "Last Segment Age" },
+      "camera_name": { "name": "Camera Name" },
+      "camera_state": { "name": "Camera State" }
+    },
+    "text": {
+      "display_message": { "name": "Display Message" }
+    }
+  }
+}

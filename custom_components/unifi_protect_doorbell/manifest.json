@@ -1,0 +1,12 @@
+{
+  "domain": "unifi_protect_doorbell",
+  "name": "UniFi Protect Doorbell",
+  "version": "1.0.0",
+  "documentation": "https://github.com/choell401780/unifi-protect-talkback-ha",
+  "issue_tracker": "https://github.com/choell401780/unifi-protect-talkback-ha/issues",
+  "requirements": [],
+  "dependencies": ["stream"],
+  "codeowners": ["@choell401780"],
+  "iot_class": "local_polling",
+  "config_flow": true
+}

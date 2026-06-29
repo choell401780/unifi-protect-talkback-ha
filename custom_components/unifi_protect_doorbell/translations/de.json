@@ -1,0 +1,64 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "UniFi Protect Türklingel",
+        "description": "Verbindung zum UniFi Protect Doorbell Add-on herstellen. Das Add-on muss laufen und der Port muss erreichbar sein.",
+        "data": {
+          "addon_url": "Add-on URL",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        },
+        "data_description": {
+          "addon_url": "Basis-URL des Add-ons, z.B. http://localhost:8080",
+          "verify_ssl": "Deaktivieren für selbstsignierte Zertifikate"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zum Add-on fehlgeschlagen. URL prüfen und sicherstellen, dass das Add-on läuft.",
+      "unknown": "Unerwarteter Fehler — bitte Home-Assistant-Logs prüfen."
+    },
+    "abort": {
+      "already_configured": "Diese Add-on URL ist bereits konfiguriert."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "nvr_connected": { "name": "NVR verbunden" },
+      "stream_active": { "name": "Stream aktiv" }
+    },
+    "button": {
+      "clear_display_message": { "name": "Display-Nachricht löschen" },
+      "restart_stream": { "name": "Stream neu starten" }
+    },
+    "camera": {
+      "live": { "name": "Livebild" }
+    },
+    "number": {
+      "speaker_volume": { "name": "Lautsprecher-Lautstärke" },
+      "mic_volume": { "name": "Mikrofon-Empfindlichkeit" },
+      "ring_volume": { "name": "Klingelton-Lautstärke (intern)" },
+      "chime_volume": { "name": "Chime-Lautstärke" }
+    },
+    "select": {
+      "ringtone": { "name": "Klingelton" }
+    },
+    "sensor": {
+      "stream_status": {
+        "name": "Stream-Status",
+        "state": {
+          "ready": "Bereit",
+          "starting": "Startet",
+          "error": "Fehler"
+        }
+      },
+      "stream_restart_count": { "name": "Stream-Neustarts" },
+      "last_segment_age": { "name": "Letztes Segment vor" },
+      "camera_name": { "name": "Kamera-Name" },
+      "camera_state": { "name": "Kamera-Status" }
+    },
+    "text": {
+      "display_message": { "name": "Display-Nachricht" }
+    }
+  }
+}

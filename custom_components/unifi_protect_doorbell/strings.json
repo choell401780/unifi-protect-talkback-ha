@@ -1,0 +1,64 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "UniFi Protect Doorbell",
+        "description": "Connect to the UniFi Protect Doorbell add-on. The add-on must be running and the port must be accessible.",
+        "data": {
+          "addon_url": "Add-on URL",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "addon_url": "Base URL of the add-on, e.g. http://localhost:8080",
+          "verify_ssl": "Disable for self-signed certificates"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to add-on. Check the URL and ensure the add-on is running.",
+      "unknown": "Unexpected error — check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This add-on URL is already configured."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "nvr_connected": { "name": "NVR verbunden" },
+      "stream_active": { "name": "Stream aktiv" }
+    },
+    "button": {
+      "clear_display_message": { "name": "Display-Nachricht löschen" },
+      "restart_stream": { "name": "Stream neu starten" }
+    },
+    "camera": {
+      "live": { "name": "Livebild" }
+    },
+    "number": {
+      "speaker_volume": { "name": "Lautsprecher-Lautstärke" },
+      "mic_volume": { "name": "Mikrofon-Empfindlichkeit" },
+      "ring_volume": { "name": "Klingelton-Lautstärke (intern)" },
+      "chime_volume": { "name": "Chime-Lautstärke" }
+    },
+    "select": {
+      "ringtone": { "name": "Klingelton" }
+    },
+    "sensor": {
+      "stream_status": {
+        "name": "Stream-Status",
+        "state": {
+          "ready": "Bereit",
+          "starting": "Startet",
+          "error": "Fehler"
+        }
+      },
+      "stream_restart_count": { "name": "Stream-Neustarts" },
+      "last_segment_age": { "name": "Letztes Segment vor" },
+      "camera_name": { "name": "Kamera-Name" },
+      "camera_state": { "name": "Kamera-Status" }
+    },
+    "text": {
+      "display_message": { "name": "Display-Nachricht" }
+    }
+  }
+}
