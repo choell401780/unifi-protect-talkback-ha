@@ -750,7 +750,8 @@ let cfg = { timesliceMs: 500 };
 let speakerTimer = null, micTimer = null;
 let hlsInstance = null;
 let hlsRetryCount = 0;
-let hlsStartTime = 0;  // ms timestamp when HLS mode was last activated
+let hlsStartTime = 0;          // ms timestamp when HLS mode was last activated
+let streamRestartCount = 0;    // last known server-side restart count (for auto-recovery)
 let currentPreview = null;
 let currentPreviewBtn = null;
 
@@ -778,6 +779,7 @@ async function init() {
   hlsStartTime = Date.now();
   startHlsStream();
   setupTalkback();
+  setInterval(pollStreamHealth, 30_000);  // auto-recover after server-side stream restart
 }
 
 // ── Device discovery ──────────────────────────────────────
@@ -971,10 +973,13 @@ function startHlsStream() {
       if (!data.fatal) return;
       label.textContent = '';
       hlsRetryCount++;
-      const delay = Math.min(5000 * hlsRetryCount, 30000);
+      const delay = Math.min(3000 * hlsRetryCount, 10000);
       // Within 20s of HLS activation: camera is likely still producing its first segment.
       const isStartup = hlsStartTime > 0 && (Date.now() - hlsStartTime) < 20000;
-      showOverlay(isStartup ? 'Stream wird gestartet…' : `HLS-Fehler – Retry in ${delay/1000}s…`);
+      const errMsg = isStartup           ? 'Stream wird gestartet…'
+                   : hlsRetryCount <= 2 ? `HLS-Fehler – Verbinde neu (${hlsRetryCount})…`
+                   :                     'Videostream wird neu verbunden…';
+      showOverlay(errMsg, true);
       log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}${isStartup ? ' (startup)' : ''}`, isStartup ? 'info' : 'err');
       hlsInstance.destroy(); hlsInstance = null;
       setTimeout(() => startHlsStream(), delay);
@@ -988,6 +993,27 @@ function startHlsStream() {
     showOverlay('Browser unterstützt kein HLS');
     log('HLS wird von diesem Browser nicht unterstützt', 'err');
   }
+}
+
+// ── Stream-Health polling ─────────────────────────────────
+// Polls /api/status every 30 s. If the server restarted the stream while
+// hls.js was in an error/retry loop, we reload the player immediately instead
+// of waiting for the next scheduled retry.
+async function pollStreamHealth() {
+  try {
+    const s = await fetch('./api/status').then(r => r.json());
+    const serverRestarts = s.stream?.restartCount ?? 0;
+    if (serverRestarts > streamRestartCount && hlsRetryCount > 0) {
+      log(`Stream-Neustart erkannt (Server #${serverRestarts}) – Player wird neu verbunden…`, 'ok');
+      streamRestartCount = serverRestarts;
+      hlsRetryCount = 0;
+      if (hlsInstance) { try { hlsInstance.destroy(); } catch {} hlsInstance = null; }
+      hlsStartTime = Date.now();
+      startHlsStream();
+    } else {
+      streamRestartCount = serverRestarts;
+    }
+  } catch { /* status transiently unavailable — skip tick */ }
 }
 
 // Mute toggle

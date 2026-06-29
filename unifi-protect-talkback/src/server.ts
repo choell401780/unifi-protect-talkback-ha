@@ -127,7 +127,7 @@ const HLS_REENCODE = process.env["HLS_REENCODE"] === "1";
 // activated when HLS_REENCODE is set.
 const HLS_LL = HLS_REENCODE; // true → LL-HLS (fMP4, 0.5 s segments, low_latency)
 const HLS_TIME = process.env["HLS_TIME"] ?? (HLS_LL ? "0.5" : "1");
-const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "4" : "3"); // 4×0.5 s = 2 s window
+const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "4" : "5"); // 5×1 s = 5 s window (larger buffer → fewer 404s on segment rotation)
 const HLS_VIDEO_BITRATE = process.env["HLS_VIDEO_BITRATE"] ?? "2M";
 const HLS_PRESET = process.env["HLS_PRESET"] ?? "veryfast";   // x264 preset
 // Hardware acceleration scaffolding — "none" = software libx264 (default, stable).
@@ -223,6 +223,18 @@ class HlsManager {
   // Set true once stop() is called — prevents the close-handler auto-restart
   // from firing on a SIGTERM that we ourselves sent.
   private stopping = false;
+  private _lastSegmentAt = 0;     // epoch ms of last segment write detected via ffmpeg stderr
+  private _restartCount = 0;      // number of automatic restarts since process start
+  private _lastRestartAt = 0;     // epoch ms of the last spawn() call (after the initial one)
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private killTimer: ReturnType<typeof setTimeout> | null = null;
+  private _stalledKillPending = false;
+
+  // Watchdog thresholds — overridable via env for tuning without code changes
+  private static readonly STALL_THRESHOLD_MS =
+    parseInt(process.env["HLS_STALL_THRESHOLD_MS"] ?? "15000", 10);
+  private static readonly WATCHDOG_INTERVAL_MS = 5_000;   // health-check frequency
+  private static readonly MIN_RESTART_GAP_MS = 10_000;    // debounce rapid crash-restarts
 
   constructor(private rtspUrl: string, private hlsDir: string) {}
 
@@ -245,7 +257,9 @@ class HlsManager {
     // Defensive: clear any leftover segments before starting the new ffmpeg
     // (prevents "failed to rename .tmp" / "failed to delete old segment" races
     // when a previous process was still terminating).
+    this._stalledKillPending = false;
     HlsManager.cleanupDir(this.hlsDir);
+    this._lastSegmentAt = 0;
 
     const m3u8 = path.join(this.hlsDir, "stream.m3u8");
     const segExt = HLS_LL ? "m4s" : "ts";
@@ -260,6 +274,7 @@ class HlsManager {
       "-flags", "low_delay",
       ...inputFlags,
       "-rtsp_transport", HLS_RTSP_TRANSPORT,
+      "-stimeout", "10000000",          // 10 s RTSP socket timeout → fast failure detection
       "-analyzeduration", HLS_ANALYZEDURATION,
       "-probesize", HLS_PROBESIZE,
       "-i", this.rtspUrl,
@@ -296,7 +311,7 @@ class HlsManager {
     this._startedAt = Date.now();
     this.proc = spawn("ffmpeg", args);
     const procPid = this.proc.pid;
-    console.log(`[hls] ffmpeg started (pid=${procPid})`);
+    console.log(`[hls] ffmpeg started (pid=${procPid})${this._restartCount > 0 ? ` [restart #${this._restartCount}]` : ""}`);
 
     this.proc.stderr?.on("data", (d: Buffer) => {
       const line = d.toString().trim();
@@ -311,28 +326,99 @@ class HlsManager {
         if (!this._ready) {
           const startupMs = Date.now() - this._startedAt;
           console.log(`[hls] first playlist ready after ${startupMs}ms${HLS_LL ? " [LL-HLS]" : ""}`);
+          this.startWatchdog();  // begin health-monitoring once stream is up
         }
         this._ready = true;
         this._error = null;
       }
-    });
-
-    this.proc.on("close", (code) => {
-      console.log(`[hls] ffmpeg exit ${code} (pid=${procPid})`);
-      this.proc = null;
-      this._ready = false;
-      if (!this.stopping && code !== 0 && code !== null) {
-        this._error = `ffmpeg exited (${code})`;
-        console.log(`[hls] scheduling restart in 8s`);
-        this.restartTimer = setTimeout(() => this.spawn(), 8000);
+      // Track segment writes — used by the watchdog to detect stalled streams
+      if (line.includes("Opening") && /seg\d+\.(ts|m4s)/.test(line)) {
+        this._lastSegmentAt = Date.now();
       }
     });
 
-    console.log(`[hls] starting ffmpeg RTSP→HLS (transport=${HLS_RTSP_TRANSPORT})`);
+    this.proc.on("close", (code) => {
+      if (this.killTimer) { clearTimeout(this.killTimer); this.killTimer = null; }
+      this._stalledKillPending = false;
+      this.stopWatchdog();
+
+      const lastSegInfo = this._lastSegmentAt > 0
+        ? `${Math.round((Date.now() - this._lastSegmentAt) / 1000)}s ago`
+        : "never";
+      console.log(
+        `[hls] ffmpeg exit=${code} pid=${procPid} restarts=${this._restartCount} last_segment=${lastSegInfo}`
+      );
+
+      this.proc = null;
+      this._ready = false;
+
+      // Restart on ANY exit when not intentionally stopped — including code 0,
+      // which happens when the NVR/camera closes the RTSP session cleanly.
+      if (!this.stopping) {
+        this._error = `ffmpeg exited (${code ?? "signal"})`;
+        // Enforce a minimum gap between restarts to avoid tight crash-loops.
+        const gapMs = this._lastRestartAt > 0 ? Date.now() - this._lastRestartAt : Infinity;
+        const delay = Math.max(3000, HlsManager.MIN_RESTART_GAP_MS - gapMs);
+        this._restartCount++;
+        console.log(`[hls] restart #${this._restartCount} in ${(delay / 1000).toFixed(1)}s (exit=${code})`);
+        this.restartTimer = setTimeout(() => {
+          this._lastRestartAt = Date.now();
+          this.spawn();
+        }, delay);
+      }
+    });
+
+    console.log(`[hls] starting ffmpeg RTSP→HLS (transport=${HLS_RTSP_TRANSPORT}, stall_threshold=${HlsManager.STALL_THRESHOLD_MS / 1000}s)`);
+  }
+
+  private startWatchdog(): void {
+    this.stopWatchdog();
+    this.watchdogTimer = setInterval(() => this.tickWatchdog(), HlsManager.WATCHDOG_INTERVAL_MS);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) { clearInterval(this.watchdogTimer); this.watchdogTimer = null; }
+  }
+
+  private tickWatchdog(): void {
+    if (!this.proc || this.stopping || this._stalledKillPending) return;
+    if (!this._ready || this._lastSegmentAt === 0) return;  // still in startup
+
+    const ageMs = Date.now() - this._lastSegmentAt;
+    if (ageMs > HlsManager.STALL_THRESHOLD_MS) {
+      console.warn(
+        `[hls] watchdog: no segment for ${Math.round(ageMs / 1000)}s ` +
+        `(pid=${this.proc.pid}, restarts=${this._restartCount}) — terminating stalled ffmpeg`
+      );
+      this.killStalled();
+    }
+  }
+
+  private killStalled(): void {
+    const proc = this.proc;
+    if (!proc) return;
+    this._stalledKillPending = true;
+    this._error = "stream stalled — no new segments";
+    const pid = proc.pid;
+
+    try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+
+    // Escalate to SIGKILL after 3 s if SIGTERM didn't take
+    if (this.killTimer) clearTimeout(this.killTimer);
+    this.killTimer = setTimeout(() => {
+      this.killTimer = null;
+      try {
+        process.kill(pid!, 0);         // throws if already dead
+        process.kill(pid!, "SIGKILL");
+        console.warn(`[hls] SIGKILL stalled pid=${pid}`);
+      } catch { /* already gone, fine */ }
+    }, 3000);
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.stopWatchdog();
+    if (this.killTimer) { clearTimeout(this.killTimer); this.killTimer = null; }
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
     const proc = this.proc;
     this.proc = null;
@@ -383,6 +469,22 @@ class HlsManager {
   }
 
   getError(): string | null { return this._error; }
+
+  getHealth(): {
+    running: boolean; ready: boolean; error: string | null;
+    restartCount: number; lastSegmentAgeSec: number | null; pid: number | undefined;
+  } {
+    return {
+      running: !!this.proc,
+      ready: this._ready,
+      error: this._error,
+      restartCount: this._restartCount,
+      lastSegmentAgeSec: this._lastSegmentAt > 0
+        ? Math.round((Date.now() - this._lastSegmentAt) / 1000)
+        : null,
+      pid: this.proc?.pid,
+    };
+  }
 }
 
 export function startServer(
@@ -700,6 +802,7 @@ export function startServer(
     // ── Camera API ───────────────────────────────────────────────────────────
 
     if (url === "/api/status" && method === "GET") {
+      const health = hls?.getHealth() ?? null;
       json(res, {
         nvr: { connected: !!activeCameraId && !cameraDetailsError, error: cameraDetailsError },
         camera: cameraDetails
@@ -708,6 +811,10 @@ export function startServer(
         stream: {
           hlsReady: hls?.isReady() ?? false,
           hlsError: hls?.getError() ?? null,
+          restartCount: health?.restartCount ?? 0,
+          lastSegmentAgeSec: health?.lastSegmentAgeSec ?? null,
+          ffmpegPid: health?.pid,
+          ffmpegRunning: health?.running ?? false,
         },
         activeCameraId,
       });
