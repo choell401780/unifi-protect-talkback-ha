@@ -41,6 +41,10 @@ fi
 HLS_VIDEO_BITRATE="$(bashio::config 'hls_video_bitrate' '2M')"
 HLS_PRESET="$(bashio::config 'hls_preset' 'veryfast')"
 HLS_HWACCEL="$(bashio::config 'hls_hwaccel' 'none')"
+HLS_PREWARM=1
+if bashio::config.false 'hls_prewarm'; then
+    HLS_PREWARM=0
+fi
 
 # ── Info-Ausgabe (kein Passwort!) ─────────────────────────────────────────────
 bashio::log.info "NVR:            ${PROTECT_HOST}:${PROTECT_PORT}"
@@ -54,6 +58,7 @@ if [ "${HLS_REENCODE}" = "1" ]; then
 else
     bashio::log.info "HLS Re-Encode:  OFF (copy mode, depends on camera GOP)"
 fi
+bashio::log.info "HLS Pre-warm:   $([ "${HLS_PREWARM}" = "1" ] && echo "ON" || echo "OFF")"
 
 if ! bashio::var.is_empty "${PROTECT_CAMERA_ID}"; then
     bashio::log.info "Kamera-ID (manuell): ${PROTECT_CAMERA_ID}"
@@ -81,6 +86,7 @@ export HLS_REENCODE
 export HLS_VIDEO_BITRATE
 export HLS_PRESET
 export HLS_HWACCEL
+export HLS_PREWARM
 export SERVER=1
 
 # ── SSL für Weboberfläche ─────────────────────────────────────────────────────

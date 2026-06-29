@@ -752,6 +752,7 @@ let hlsInstance = null;
 let hlsRetryCount = 0;
 let hlsStartTime = 0;          // ms timestamp when HLS mode was last activated
 let streamRestartCount = 0;    // last known server-side restart count (for auto-recovery)
+let streamMode = 'hls';        // 'hls' or 'll-hls' — received from /api/status
 let currentPreview = null;
 let currentPreviewBtn = null;
 
@@ -776,10 +777,39 @@ async function init() {
   await loadStatus();
   await loadSettings();
   await loadChimeSettings();
+  setupTalkback();
+  setInterval(pollStreamHealth, 15_000);  // auto-recover after server-side stream restart
+
+  // Wait until the server-side HLS pipeline is ready before loading the player.
+  // Avoids an immediate 503 → retry cascade on every page open.
+  showOverlay('Videostream wird vorbereitet…', true);
+  streamMode = await waitForStreamReady(60);
   hlsStartTime = Date.now();
   startHlsStream();
-  setupTalkback();
-  setInterval(pollStreamHealth, 30_000);  // auto-recover after server-side stream restart
+}
+
+// Poll /api/status until stream.hlsReady === true or timeout (seconds).
+// Returns the stream mode ('hls' | 'll-hls') to configure hls.js correctly.
+async function waitForStreamReady(maxWaitSecs) {
+  const deadline = Date.now() + maxWaitSecs * 1000;
+  let first = true;
+  while (Date.now() < deadline) {
+    try {
+      const s = await fetch('./api/status').then(r => r.json());
+      if (s.stream?.hlsReady) {
+        const mode = s.stream.mode ?? 'hls';
+        log(`Stream bereit (${mode === 'll-hls' ? 'LL-HLS' : 'HLS'})`, 'ok');
+        return mode;
+      }
+      if (first) { first = false; log('Warte auf HLS-Stream…', 'info'); }
+    } catch { /* transient — retry */ }
+    // Sleep 2s; abort early if deadline passed
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise(r => setTimeout(r, Math.min(2000, remaining)));
+  }
+  log('Timeout beim Warten auf Stream — starte direkt', 'info');
+  return 'hls'; // fallback, hls.js will enter its own retry loop
 }
 
 // ── Device discovery ──────────────────────────────────────
@@ -854,9 +884,11 @@ async function selectDevice(id) {
     await loadStatus();
     await loadSettings();
     await loadChimeSettings();
+    setupTalkback();
+    showOverlay('Videostream wird vorbereitet…', true);
+    streamMode = await waitForStreamReady(60);
     hlsStartTime = Date.now();
     startHlsStream();
-    setupTalkback();
   } catch (e) {
     log('Auswahl-Fehler: ' + e.message, 'err');
     const last = content.querySelector('p:last-child');
@@ -925,15 +957,20 @@ function startHlsStream() {
   if (Hls.isSupported()) {
     if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
 
+    // Configure hls.js based on the actual stream mode reported by /api/status.
+    // lowLatencyMode=true is only correct for LL-HLS (fMP4 + partial segments).
+    // With standard MPEG-TS segments (mode='hls'), it causes constant stalls and
+    // buffer errors because liveSyncDuration < segment duration is impossible.
+    const isLL = streamMode === 'll-hls';
     hlsInstance = new Hls({
       debug: false,
       enableWorker: true,
-      lowLatencyMode: true,
-      liveSyncDuration: 0.5,         // target: 0.5 s behind live edge (= 1 segment)
-      liveMaxLatencyDuration: 2,     // catch-up above 2 s delay
-      maxBufferLength: 4,
-      backBufferLength: 1,
-      maxFragLookUpTolerance: 0.1,
+      lowLatencyMode: isLL,
+      liveSyncDuration:      isLL ? 1   : 3,   // LL: 2 parts behind; HLS: 3 segments
+      liveMaxLatencyDuration: isLL ? 4  : 12,
+      maxBufferLength:        isLL ? 8  : 20,
+      backBufferLength:       isLL ? 2  : 5,
+      maxFragLookUpTolerance: isLL ? 0.1 : 0.25,
     });
 
     hlsInstance.loadSource('./hls/stream.m3u8');
@@ -973,14 +1010,15 @@ function startHlsStream() {
       if (!data.fatal) return;
       label.textContent = '';
       hlsRetryCount++;
-      const delay = Math.min(3000 * hlsRetryCount, 10000);
-      // Within 20s of HLS activation: camera is likely still producing its first segment.
-      const isStartup = hlsStartTime > 0 && (Date.now() - hlsStartTime) < 20000;
-      const errMsg = isStartup           ? 'Stream wird gestartet…'
-                   : hlsRetryCount <= 2 ? `HLS-Fehler – Verbinde neu (${hlsRetryCount})…`
-                   :                     'Videostream wird neu verbunden…';
+      // After waitForStreamReady, the server confirmed the stream is up.
+      // Any early error is a transient glitch, not a "startup" situation.
+      // Cap delay at 8s so recovery stays responsive.
+      const delay = Math.min(2000 * hlsRetryCount, 8000);
+      const errMsg = hlsRetryCount <= 2
+        ? `Stream-Fehler – Verbinde neu (${hlsRetryCount})…`
+        : 'Videostream wird neu verbunden…';
       showOverlay(errMsg, true);
-      log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}${isStartup ? ' (startup)' : ''}`, isStartup ? 'info' : 'err');
+      log(`Stream-Fehler (${data.type}): Retry ${hlsRetryCount}`, 'err');
       hlsInstance.destroy(); hlsInstance = null;
       setTimeout(() => startHlsStream(), delay);
     });
@@ -995,23 +1033,45 @@ function startHlsStream() {
   }
 }
 
-// ── Stream-Health polling ─────────────────────────────────
-// Polls /api/status every 30 s. If the server restarted the stream while
-// hls.js was in an error/retry loop, we reload the player immediately instead
-// of waiting for the next scheduled retry.
+// ── Stream-Health polling (every 15 s) ────────────────────
+// Three recovery triggers:
+// 1. Server restarted the stream while player is in retry loop → reconnect immediately.
+// 2. Server stream went down while player is silent (no errors, no video) → reconnect.
+// 3. Stream mode changed → update for next hls.js initialisation.
 async function pollStreamHealth() {
   try {
     const s = await fetch('./api/status').then(r => r.json());
     const serverRestarts = s.stream?.restartCount ?? 0;
-    if (serverRestarts > streamRestartCount && hlsRetryCount > 0) {
-      log(`Stream-Neustart erkannt (Server #${serverRestarts}) – Player wird neu verbunden…`, 'ok');
+    const serverReady = s.stream?.hlsReady ?? false;
+    const mode = s.stream?.mode ?? 'hls';
+
+    if (mode !== streamMode) streamMode = mode;
+
+    if (serverRestarts > streamRestartCount) {
       streamRestartCount = serverRestarts;
-      hlsRetryCount = 0;
+      if (hlsRetryCount > 0 || !serverReady) {
+        log(`Stream-Neustart erkannt (Server #${serverRestarts}) – Player neu verbinden…`, 'ok');
+        hlsRetryCount = 0;
+        if (hlsInstance) { try { hlsInstance.destroy(); } catch {} hlsInstance = null; }
+        if (serverReady) {
+          hlsStartTime = Date.now();
+          startHlsStream();
+        } else {
+          showOverlay('Videostream wird neu verbunden…', true);
+          streamMode = await waitForStreamReady(30);
+          hlsStartTime = Date.now();
+          startHlsStream();
+        }
+      }
+    } else if (!serverReady && hlsInstance) {
+      // Stream went down while player was running (silent failure)
+      log('Stream nicht mehr aktiv – warte auf Neustart…', 'err');
       if (hlsInstance) { try { hlsInstance.destroy(); } catch {} hlsInstance = null; }
+      showOverlay('Videostream wird neu verbunden…', true);
+      hlsRetryCount = 0;
+      streamMode = await waitForStreamReady(30);
       hlsStartTime = Date.now();
       startHlsStream();
-    } else {
-      streamRestartCount = serverRestarts;
     }
   } catch { /* status transiently unavailable — skip tick */ }
 }

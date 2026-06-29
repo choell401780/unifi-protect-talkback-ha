@@ -130,6 +130,10 @@ const HLS_TIME = process.env["HLS_TIME"] ?? (HLS_LL ? "0.5" : "1");
 const HLS_LIST_SIZE = process.env["HLS_LIST_SIZE"] ?? (HLS_LL ? "4" : "5"); // 5×1 s = 5 s window (larger buffer → fewer 404s on segment rotation)
 const HLS_VIDEO_BITRATE = process.env["HLS_VIDEO_BITRATE"] ?? "2M";
 const HLS_PRESET = process.env["HLS_PRESET"] ?? "veryfast";   // x264 preset
+// Pre-warm: start HLS at boot so stream.m3u8 is ready before any browser opens.
+// Set HLS_PREWARM=0 to disable (lazy start — stream begins on first /hls/ request).
+const HLS_PREWARM = (process.env["HLS_PREWARM"] ?? "1") !== "0";
+
 // Hardware acceleration scaffolding — "none" = software libx264 (default, stable).
 // Other values prepare ffmpeg pipelines but are NOT validated on every host;
 // users opt-in explicitly when their container has the necessary devices.
@@ -651,7 +655,15 @@ export function startServer(
   };
 
   void discoverDoorbell().then(() => {
-    if (activeCameraId) activateCamera();
+    if (!activeCameraId) return;
+    if (HLS_PREWARM) {
+      console.log(`[server] HLS_PREWARM=true — starting stream immediately`);
+      activateCamera();
+    } else {
+      console.log(`[server] HLS_PREWARM=false — loading camera details only (stream starts on first request)`);
+      void loadCameraDetails();
+      void loadChimeData();
+    }
   });
 
   // Reload periodically
@@ -706,6 +718,11 @@ export function startServer(
     if (method === "GET" && url === "/hls/stream.m3u8") {
       const m3u8 = path.join(HLS_DIR, "stream.m3u8");
       if (!fs.existsSync(m3u8)) {
+        // Lazy start: if prewarm is off and camera is ready, kick off the stream now
+        if (!HLS_PREWARM && activeCameraId && cameraDetails && !hls) {
+          console.log(`[server] lazy HLS start triggered by first /hls/stream.m3u8 request`);
+          startVideoStream();
+        }
         res.writeHead(503, { "Retry-After": "3" }); res.end("Stream not ready");
         return;
       }
@@ -803,18 +820,23 @@ export function startServer(
 
     if (url === "/api/status" && method === "GET") {
       const health = hls?.getHealth() ?? null;
+      const hlsReady = hls?.isReady() ?? false;
+      const ffmpegRunning = health?.running ?? false;
       json(res, {
         nvr: { connected: !!activeCameraId && !cameraDetailsError, error: cameraDetailsError },
         camera: cameraDetails
           ? { id: cameraDetails.id, name: cameraDetails.name, type: cameraDetails.type, state: cameraDetails.state }
           : null,
         stream: {
-          hlsReady: hls?.isReady() ?? false,
+          active: ffmpegRunning && hlsReady,
+          mode: HLS_LL ? "ll-hls" : "hls",
+          prewarm: HLS_PREWARM,
+          hlsReady,
           hlsError: hls?.getError() ?? null,
           restartCount: health?.restartCount ?? 0,
           lastSegmentAgeSec: health?.lastSegmentAgeSec ?? null,
           ffmpegPid: health?.pid,
-          ffmpegRunning: health?.running ?? false,
+          ffmpegRunning,
         },
         activeCameraId,
       });
